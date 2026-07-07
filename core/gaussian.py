@@ -16,7 +16,7 @@ import math
 import numpy as np
 from typing import Optional, Callable
 
-from .hermite import hermite_coeffs_mc, hermite_series_covariance
+from .hermite import hermite_coeffs_mc, hermite_coeffs_batch, hermite_series_covariance
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ def gaussian_theoretical_loss(
 
     # Hermite coefficients c_n(m_tilde_j, S_tilde_j)
     C_U = hermite_coeffs_batch(omega, m_tilde, S_tilde, n_terms=n_terms,
-                                n_mc=n_mc, rng=rng)  # (k, n_terms)
+                                n_samples=n_mc, rng=rng)  # (k, n_terms)
 
     # alpha_j = c_1(m_tilde_j, S_tilde_j) / S_tilde_j
     alpha_U = C_U[:, 1] / S_tilde  # (k,)
@@ -222,7 +222,7 @@ def gaussian_theoretical_loss(
     r0     = params_0['r_tilde']
 
     C_0 = hermite_coeffs_batch(omega, m0, S0, n_terms=n_terms,
-                                n_mc=n_mc, rng=rng)  # (k, n_terms)
+                                n_samples=n_mc, rng=rng)  # (k, n_terms)
     alpha_0 = C_0[:, 1] / S0
 
     Sigma_phi_0 = np.zeros((k, k))

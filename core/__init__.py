@@ -32,6 +32,13 @@ from .metrics import (
     conditioning_gain_r2,
     summarize_results,
 )
+from .dnn_estimator import (
+    extract_features,
+    build_conditional_features,
+    mmse_from_features,
+    wiener_filter_loss,
+    wiener_filter_cond_loss,
+)
 
 __all__ = [
     # hermite
