@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+figures/*.png
+figures/*.pdf
+tables/*.csv
+tables/*.tex
+logs/
+*.out
+*.err
+.DS_Store
