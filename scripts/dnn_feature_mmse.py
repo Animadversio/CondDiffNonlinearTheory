@@ -213,122 +213,182 @@ def wiener_gpu(X0_t: torch.Tensor, sigma: float, lam: float = 1e-6) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Class-conditional Wiener filter (Gaussian within each class)
+# Class-conditional Wiener filter — via dual-form regression per class
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
-def fit_class_stats(x0_gpu: torch.Tensor, labels: torch.Tensor, n_classes: int):
-    """
-    Compute per-class mean mu_c and eigenvalues of within-class covariance Sigma_c.
-    Returns list of (mu_c, eigvals_c) tuples, one per class.
-    """
-    stats = []
-    for c in range(n_classes):
-        mask = labels == c
-        x_c  = x0_gpu[mask]                   # (N_c, d)
-        mu_c = x_c.mean(0)                    # (d,)
-        x_cc = x_c - mu_c
-        N_c  = len(x_c)
-        d    = x_c.shape[1]
-        if d <= N_c:
-            Sigma_c = (x_cc.T @ x_cc) / (N_c - 1)
-            eigvals = torch.linalg.eigvalsh(Sigma_c).clamp(min=0)
-        else:
-            # dual form
-            K = (x_cc @ x_cc.T) / (N_c - 1)
-            eigvals = torch.linalg.eigvalsh(K).clamp(min=0)
-        stats.append((mu_c, eigvals, N_c))
-    return stats
-
-
-@torch.no_grad()
-def wiener_class_cond_gpu(class_stats: list, sigma: float, class_counts: torch.Tensor) -> dict:
-    """
-    Class-conditional Wiener filter MMSE (assuming Gaussian within each class):
-        MMSE_c = sum_i sigma^2 * lambda_{c,i} / (lambda_{c,i} + sigma^2)
-    Averaged over classes weighted by class frequency.
-
-    This is the theoretical lower bound for a linear denoiser that knows U.
-    """
-    total_N = int(class_counts.sum().item())
-    loss = 0.0
-    for c, (mu_c, eigvals_c, N_c) in enumerate(class_stats):
-        mmse_c = float((sigma**2 * eigvals_c / (eigvals_c + sigma**2)).sum())
-        loss  += mmse_c * N_c / total_N
-    return dict(loss=loss)
-
-
-# ---------------------------------------------------------------------------
-# k-NN conditional mean (nonparametric Bayes-optimal MMSE estimate)
-# ---------------------------------------------------------------------------
-
-@torch.no_grad()
-def knn_cond_mean_loss(
+def wiener_class_cond_gpu(
     x0_gpu: torch.Tensor,
     labels: torch.Tensor,
     sigma: float,
-    k: int = 10,
-    n_eval: int = 2000,
-    rng: np.random.Generator = None,
+    n_classes: int,
+    lam: float = 1e-4,
+    n_noise: int = 5,
 ) -> dict:
     """
-    Approximate E[x₀ | y, U] via k-NN regression within each class.
+    Class-conditional optimal LINEAR denoiser MMSE, estimated via regression.
 
-    For each eval point (y_i, c_i):
-        E[x₀ | y_i, c_i] ≈ mean of k nearest x₀_j in class c_i (by ||y_i - y_j||)
+    For each class c, we generate y_c = x0_c + sigma*Z and fit the best linear
+    predictor x0_c from y_c using dual-form mmse_gpu. This gives:
+        MMSE_c = Tr(Sigma_c) - Tr(Cov(x0,y|c) Sigma_y_c^{-1} Cov(y,x0|c))
 
-    Uses a subset for speed; evaluated as empirical MSE.
-    This is a nonparametric upper bound on the true MMSE E[||x₀ - E[x₀|y,U]||²].
-    (Upper bound because finite k introduces bias; true MMSE is lower.)
+    This is always <= global linear+U because class-specific slopes are more
+    expressive. The dual form (N_c x N_c, N_c~1000) is well-conditioned
+    even when d=3072 >> N_c.
+
+    Averaged over classes weighted by frequency.
     """
-    if rng is None:
-        rng = np.random.default_rng(0)
-    N, d   = x0_gpu.shape
     device = x0_gpu.device
+    N      = len(x0_gpu)
+    total_loss = 0.0
 
-    # Sample eval indices
-    eval_idx = torch.from_numpy(
-        rng.choice(N, min(n_eval, N), replace=False)
-    ).to(device)
-    x0_eval  = x0_gpu[eval_idx]
-    lab_eval = labels[eval_idx]
-
-    Z        = torch.randn_like(x0_eval) * sigma
-    y_eval   = x0_eval + Z
-
-    total_mse = 0.0
-    n_eval_actual = len(eval_idx)
-
-    for c in range(int(labels.max().item()) + 1):
-        # Pool of candidates in class c
-        pool_mask = labels == c
-        x0_pool   = x0_gpu[pool_mask]           # (N_c, d)
-        if len(x0_pool) == 0:
+    for c in range(n_classes):
+        mask   = labels == c
+        x0_c   = x0_gpu[mask]           # (N_c, d)
+        N_c    = len(x0_c)
+        if N_c < 2:
             continue
+        # Average over independent noise draws — do NOT repeat x0_c rows
+        # (repeat_interleave creates artificial correlation structure that
+        #  mmse_gpu exploits, giving spuriously low loss at high sigma)
+        total_loss_c = 0.0
+        for _ in range(n_noise):
+            Z   = torch.randn_like(x0_c) * sigma
+            Y_c = x0_c + Z
+            total_loss_c += mmse_gpu(Y_c, x0_c, lam=lam)['loss']
+        loss_c = total_loss_c / n_noise
+        total_loss += loss_c * N_c / N
 
-        # Eval points in class c
-        eval_mask = lab_eval == c
-        if eval_mask.sum() == 0:
-            continue
-        y_c  = y_eval[eval_mask]                 # (M, d)
-        x0_c = x0_eval[eval_mask]               # (M, d)
+    return dict(loss=total_loss)
 
-        # Compute pairwise distances between y_c and x0_pool
-        # ||y - x_pool||^2 = ||y||^2 + ||x||^2 - 2 y x^T
-        dists = (
-            (y_c ** 2).sum(1, keepdim=True)
-            + (x0_pool ** 2).sum(1, keepdim=True).T
-            - 2 * y_c @ x0_pool.T
-        )  # (M, N_c)
 
-        k_eff = min(k, len(x0_pool))
-        topk  = dists.topk(k_eff, dim=1, largest=False).indices  # (M, k)
-        pred  = x0_pool[topk].mean(dim=1)                        # (M, d)
-        mse   = float(((pred - x0_c) ** 2).sum())
-        total_mse += mse
+# ---------------------------------------------------------------------------
+# Load full train/test x0 at original resolution (for Bayes pool/eval)
+# ---------------------------------------------------------------------------
 
-    loss = total_mse / n_eval_actual
-    return dict(loss=loss)
+def load_x0_split(name, split, device):
+    """
+    Load the full train or test split of a dataset at original resolution (32x32).
+    Returns:
+        x0_gpu : (N, d) float32 GPU
+        labels : (N,) long GPU
+    """
+    STORE = os.environ.get('STORE_DIR', '/n/holylfs06/LABS/kempner_fellow_binxuwang/Users/binxuwang')
+    DATASETS = os.path.join(STORE, 'Datasets')
+    raw_tf = T.ToTensor()
+    train_flag = (split == 'train')
+
+    if name == 'cifar10':
+        root = DATASETS if os.path.exists(os.path.join(DATASETS, 'cifar-10-batches-py')) else '/tmp/cifar10'
+        ds = torchvision.datasets.CIFAR10(root=root, train=train_flag,
+                                           download=(root == '/tmp/cifar10'), transform=raw_tf)
+    elif name == 'mnist':
+        root = DATASETS if os.path.exists(os.path.join(DATASETS, 'MNIST')) else '/tmp/mnist'
+        ds = torchvision.datasets.MNIST(root=root, train=train_flag,
+                                         download=(root == '/tmp/mnist'), transform=raw_tf)
+
+    loader = torch.utils.data.DataLoader(ds, batch_size=512, num_workers=8,
+                                          pin_memory=True, persistent_workers=True)
+    xs, ys = [], []
+    for x, y in loader:
+        xs.append(x); ys.append(y)
+    x_all = torch.cat(xs)
+    y_all = torch.cat(ys)
+    d = x_all[0].numel()
+    x0_gpu = x_all.reshape(len(x_all), d).to(device=device, dtype=torch.float32)
+    labels_gpu = y_all.to(device=device)
+    return x0_gpu, labels_gpu
+
+
+# ---------------------------------------------------------------------------
+# Exact empirical Bayes-optimal estimator: softmax-weighted conditional mean
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def bayes_optimal_loss(
+    x0_pool: torch.Tensor,
+    pool_labels: torch.Tensor,
+    x0_eval: torch.Tensor,
+    eval_labels: torch.Tensor,
+    sigma: float,
+    n_classes: int,
+    n_eval_per_class: int = 500,
+    conditional: bool = True,
+) -> dict:
+    """
+    Oracle empirical Bayes MMSE with self-inclusive pool.
+
+    conditional=True  (class-cond oracle):
+        For each eval sample with class c, pool = same-class training samples.
+        Softmax over ~N/n_classes pool members.
+        MSE → 0 at low σ (self-predict), → within-class variance at σ → ∞.
+        Lower bounds E[x₀|y,c] — the class-conditional MMSE.
+
+    conditional=False (unconditional oracle):
+        Pool = ALL training samples, no class restriction.
+        Softmax over full N pool.
+        MSE → 0 at low σ, → total variance at σ → ∞.
+        Lower bounds E[x₀|y] — the unconditional MMSE.
+    """
+    device = x0_pool.device
+    total_mse  = 0.0
+    total_eval = 0
+
+    if conditional:
+        # Loop over classes — pool restricted to same class
+        for c in range(n_classes):
+            pool_mask = (pool_labels == c).nonzero(as_tuple=True)[0]
+            eval_mask = (eval_labels == c).nonzero(as_tuple=True)[0]
+            if len(pool_mask) < 2 or len(eval_mask) < 1:
+                continue
+            if len(eval_mask) > n_eval_per_class:
+                eval_mask = eval_mask[:n_eval_per_class]
+
+            x0_p = x0_pool[pool_mask]
+            x0_e = x0_eval[eval_mask]
+            y_e  = x0_e + torch.randn_like(x0_e) * sigma
+
+            dists_sq = (
+                (y_e ** 2).sum(1, keepdim=True)
+                + (x0_p ** 2).sum(1, keepdim=True).T
+                - 2.0 * (y_e @ x0_p.T)
+            ).clamp(min=0)
+
+            w    = torch.softmax(-dists_sq / (2.0 * sigma ** 2), dim=1)
+            pred = w @ x0_p
+            total_mse  += float(((pred - x0_e) ** 2).sum())
+            total_eval += len(eval_mask)
+
+    else:
+        # Unconditional: pool = all samples, no class restriction
+        # Process in chunks of eval samples to avoid OOM on (N_eval x N_pool) matrix
+        n_eval_total = min(n_eval_per_class * n_classes, len(x0_eval))
+        eval_idx = torch.arange(n_eval_total, device=device)
+        x0_e = x0_eval[eval_idx]
+        y_e  = x0_e + torch.randn_like(x0_e) * sigma
+
+        chunk = 200
+        for start in range(0, n_eval_total, chunk):
+            end    = min(start + chunk, n_eval_total)
+            y_ch   = y_e[start:end]
+            x0_ch  = x0_e[start:end]
+            dists_sq = (
+                (y_ch ** 2).sum(1, keepdim=True)
+                + (x0_pool ** 2).sum(1, keepdim=True).T
+                - 2.0 * (y_ch @ x0_pool.T)
+            ).clamp(min=0)
+            w    = torch.softmax(-dists_sq / (2.0 * sigma ** 2), dim=1)
+            pred = w @ x0_pool
+            total_mse  += float(((pred - x0_ch) ** 2).sum())
+        total_eval = n_eval_total
+
+    loss = total_mse / total_eval if total_eval > 0 else float('nan')
+    return dict(loss=loss, n_eval=total_eval)
+
+
+# Keep old name as alias
+def bayes_optimal_cond_loss(*args, **kwargs):
+    return bayes_optimal_loss(*args, **kwargs)
 
 
 @torch.no_grad()
@@ -371,10 +431,13 @@ def run_experiment(args):
     print("Building ResNet18 encoder ...")
     encoder = build_encoder(device)
 
-    # Pre-compute class statistics (for class-conditional Wiener)
-    print("Computing class statistics ...")
-    class_stats   = fit_class_stats(x0_small, labels, n_classes)
-    class_counts  = torch.tensor([s[2] for s in class_stats], device=device)
+    # Load full train/test splits for Bayes pool/eval (avoids self-prediction)
+    print("Loading full train set as Bayes pool ...")
+    x0_pool_full, pool_labels_full = load_x0_split(args.dataset, 'train', device)
+    print(f"  Pool: {x0_pool_full.shape} ({len(x0_pool_full)} samples)")
+    print("Loading full test set as Bayes eval ...")
+    x0_eval_full, eval_labels_full = load_x0_split(args.dataset, 'test', device)
+    print(f"  Eval: {x0_eval_full.shape} ({len(x0_eval_full)} samples)")
 
     sigma_grid = np.logspace(
         np.log10(args.sigma_min), np.log10(args.sigma_max), args.n_sigma
@@ -384,8 +447,9 @@ def run_experiment(args):
         'sigma':              sigma_grid,
         'linear_uncond':      [],
         'linear_cond':        [],
-        'wiener_class_cond':  [],   # class-conditional Wiener (Gaussian within class)
-        'knn_cond':           [],   # k-NN Bayes-optimal MMSE approximation
+        'wiener_class_cond':  [],   # class-conditional Wiener via dual-form regression
+        'bayes_cond':         [],   # oracle Bayes, pool = same class (LB on cond MMSE)
+        'bayes_uncond':       [],   # oracle Bayes, pool = all classes (LB on uncond MMSE)
         'resnet_uncond':      [],
     }
     for mode in args.modes:
@@ -405,13 +469,23 @@ def run_experiment(args):
         lin_c = mmse_gpu(Phi_lin_cond, x0_small, lam=args.lam)
         results['linear_cond'].append(lin_c['loss'])
 
-        # 1c. Class-conditional Wiener (Gaussian within class — theoretical lower bound for linear+U)
-        wcc = wiener_class_cond_gpu(class_stats, sigma, class_counts)
+        # 1c. Class-conditional Wiener via dual-form regression (unbiased, avoids Marchenko-Pastur)
+        wcc = wiener_class_cond_gpu(x0_small, labels, sigma, n_classes, lam=args.lam, n_noise=args.n_noise)
         results['wiener_class_cond'].append(wcc['loss'])
 
-        # 1d. k-NN conditional mean (nonparametric Bayes-optimal approximation)
-        knn = knn_cond_mean_loss(x0_small, labels, sigma, k=10, n_eval=2000, rng=rng)
-        results['knn_cond'].append(knn['loss'])
+        # 1d. Oracle Bayes conditional: pool = same class only  → LB on class-cond MMSE
+        bayes_c = bayes_optimal_loss(
+            x0_small, labels, x0_small, labels,
+            sigma, n_classes, conditional=True,
+        )
+        results['bayes_cond'].append(bayes_c['loss'])
+
+        # 1e. Oracle Bayes unconditional: pool = all classes  → LB on uncond MMSE
+        bayes_u = bayes_optimal_loss(
+            x0_small, labels, x0_small, labels,
+            sigma, n_classes, conditional=False,
+        )
+        results['bayes_uncond'].append(bayes_u['loss'])
 
         # 2. ResNet18 features (GPU)
         Phi_gpu = extract_and_repeat(encoder, x0_enc, sigma, args.n_noise, args.batch_size)
@@ -463,8 +537,9 @@ def plot_results(results, args):
 
     # --- Panel 1: all loss curves ---
     ax = axes[0]
-    ax.plot(sigma, results['knn_cond'],          'g-',   lw=2.5, label='k-NN E[x₀|y,U] (Bayes approx)')
-    ax.plot(sigma, results['wiener_class_cond'], 'g--',  lw=2,   label='Class-cond Wiener (Gaussian LB)')
+    ax.plot(sigma, results['bayes_cond'],         'g-',   lw=2.5, label='Oracle Bayes cond (same-class pool LB)')
+    ax.plot(sigma, results['bayes_uncond'],       'b-',   lw=2.5, label='Oracle Bayes uncond (all-class pool LB)')
+    ax.plot(sigma, results['wiener_class_cond'], 'g--',  lw=2,   label='Class-cond Wiener (dual-form)')
     ax.plot(sigma, results['linear_uncond'],     'k--',  lw=2,   label='Linear Wiener (uncond)')
     ax.plot(sigma, results['linear_cond'],       'k:',   lw=2,   label='Linear Wiener + U')
     ax.plot(sigma, results['resnet_uncond'],     'C0-o', lw=2, ms=4, label='ResNet18 uncond')
@@ -497,8 +572,10 @@ def plot_results(results, args):
     ax = axes[2]
     ax.plot(sigma, results['linear_uncond']     - results['wiener_class_cond'],
             'g--', lw=2, label='Cond gain: class-cond Wiener')
-    ax.plot(sigma, results['linear_uncond']     - results['knn_cond'],
-            'g-',  lw=2, label='Cond gain: k-NN Bayes approx')
+    ax.plot(sigma, results['linear_uncond']     - results['bayes_cond'],
+            'g-',  lw=2, label='Cond gain: Oracle Bayes (cond LB)')
+    ax.plot(sigma, results['linear_uncond']     - results['bayes_uncond'],
+            'b-',  lw=2, label='Gain: Oracle Bayes (uncond LB)')
     ax.plot(sigma, results['linear_uncond']     - results['linear_cond'],
             'k:',  lw=2, label='Cond gain: linear+U')
     ax.plot(sigma, results['resnet_uncond']     - results[f'resnet_cond_{args.modes[0]}'],
@@ -523,8 +600,9 @@ def print_summary(results, args):
     mid   = len(sigma) // 2
     s     = sigma[mid]
     print(f"\n=== Summary at sigma={s:.3f} ===")
-    print(f"  k-NN Bayes approx:      {results['knn_cond'][mid]:.4f}  (lower bound on MMSE)")
-    print(f"  Class-cond Wiener:      {results['wiener_class_cond'][mid]:.4f}  (Gaussian-within-class LB)")
+    print(f"  Oracle Bayes cond (LB):  {results['bayes_cond'][mid]:.4f}  (same-class pool → cond MMSE LB)")
+    print(f"  Oracle Bayes uncond (LB):{results['bayes_uncond'][mid]:.4f}  (all-class pool → uncond MMSE LB)")
+    print(f"  Class-cond Wiener:      {results['wiener_class_cond'][mid]:.4f}  (dual-form regression)")
     print(f"  Linear uncond (Wiener): {results['linear_uncond'][mid]:.4f}")
     print(f"  Linear cond (Wiener+U): {results['linear_cond'][mid]:.4f}")
     print(f"  ResNet uncond:          {results['resnet_uncond'][mid]:.4f}")
