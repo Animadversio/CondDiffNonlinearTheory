@@ -212,6 +212,125 @@ def wiener_gpu(X0_t: torch.Tensor, sigma: float, lam: float = 1e-6) -> dict:
     return dict(loss=loss, r2=r2)
 
 
+# ---------------------------------------------------------------------------
+# Class-conditional Wiener filter (Gaussian within each class)
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def fit_class_stats(x0_gpu: torch.Tensor, labels: torch.Tensor, n_classes: int):
+    """
+    Compute per-class mean mu_c and eigenvalues of within-class covariance Sigma_c.
+    Returns list of (mu_c, eigvals_c) tuples, one per class.
+    """
+    stats = []
+    for c in range(n_classes):
+        mask = labels == c
+        x_c  = x0_gpu[mask]                   # (N_c, d)
+        mu_c = x_c.mean(0)                    # (d,)
+        x_cc = x_c - mu_c
+        N_c  = len(x_c)
+        d    = x_c.shape[1]
+        if d <= N_c:
+            Sigma_c = (x_cc.T @ x_cc) / (N_c - 1)
+            eigvals = torch.linalg.eigvalsh(Sigma_c).clamp(min=0)
+        else:
+            # dual form
+            K = (x_cc @ x_cc.T) / (N_c - 1)
+            eigvals = torch.linalg.eigvalsh(K).clamp(min=0)
+        stats.append((mu_c, eigvals, N_c))
+    return stats
+
+
+@torch.no_grad()
+def wiener_class_cond_gpu(class_stats: list, sigma: float, class_counts: torch.Tensor) -> dict:
+    """
+    Class-conditional Wiener filter MMSE (assuming Gaussian within each class):
+        MMSE_c = sum_i sigma^2 * lambda_{c,i} / (lambda_{c,i} + sigma^2)
+    Averaged over classes weighted by class frequency.
+
+    This is the theoretical lower bound for a linear denoiser that knows U.
+    """
+    total_N = int(class_counts.sum().item())
+    loss = 0.0
+    for c, (mu_c, eigvals_c, N_c) in enumerate(class_stats):
+        mmse_c = float((sigma**2 * eigvals_c / (eigvals_c + sigma**2)).sum())
+        loss  += mmse_c * N_c / total_N
+    return dict(loss=loss)
+
+
+# ---------------------------------------------------------------------------
+# k-NN conditional mean (nonparametric Bayes-optimal MMSE estimate)
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def knn_cond_mean_loss(
+    x0_gpu: torch.Tensor,
+    labels: torch.Tensor,
+    sigma: float,
+    k: int = 10,
+    n_eval: int = 2000,
+    rng: np.random.Generator = None,
+) -> dict:
+    """
+    Approximate E[x₀ | y, U] via k-NN regression within each class.
+
+    For each eval point (y_i, c_i):
+        E[x₀ | y_i, c_i] ≈ mean of k nearest x₀_j in class c_i (by ||y_i - y_j||)
+
+    Uses a subset for speed; evaluated as empirical MSE.
+    This is a nonparametric upper bound on the true MMSE E[||x₀ - E[x₀|y,U]||²].
+    (Upper bound because finite k introduces bias; true MMSE is lower.)
+    """
+    if rng is None:
+        rng = np.random.default_rng(0)
+    N, d   = x0_gpu.shape
+    device = x0_gpu.device
+
+    # Sample eval indices
+    eval_idx = torch.from_numpy(
+        rng.choice(N, min(n_eval, N), replace=False)
+    ).to(device)
+    x0_eval  = x0_gpu[eval_idx]
+    lab_eval = labels[eval_idx]
+
+    Z        = torch.randn_like(x0_eval) * sigma
+    y_eval   = x0_eval + Z
+
+    total_mse = 0.0
+    n_eval_actual = len(eval_idx)
+
+    for c in range(int(labels.max().item()) + 1):
+        # Pool of candidates in class c
+        pool_mask = labels == c
+        x0_pool   = x0_gpu[pool_mask]           # (N_c, d)
+        if len(x0_pool) == 0:
+            continue
+
+        # Eval points in class c
+        eval_mask = lab_eval == c
+        if eval_mask.sum() == 0:
+            continue
+        y_c  = y_eval[eval_mask]                 # (M, d)
+        x0_c = x0_eval[eval_mask]               # (M, d)
+
+        # Compute pairwise distances between y_c and x0_pool
+        # ||y - x_pool||^2 = ||y||^2 + ||x||^2 - 2 y x^T
+        dists = (
+            (y_c ** 2).sum(1, keepdim=True)
+            + (x0_pool ** 2).sum(1, keepdim=True).T
+            - 2 * y_c @ x0_pool.T
+        )  # (M, N_c)
+
+        k_eff = min(k, len(x0_pool))
+        topk  = dists.topk(k_eff, dim=1, largest=False).indices  # (M, k)
+        pred  = x0_pool[topk].mean(dim=1)                        # (M, d)
+        mse   = float(((pred - x0_c) ** 2).sum())
+        total_mse += mse
+
+    loss = total_mse / n_eval_actual
+    return dict(loss=loss)
+
+
 @torch.no_grad()
 def extract_and_repeat(encoder, x0_enc_gpu, sigma, n_noise, batch_size):
     """
@@ -239,54 +358,74 @@ def extract_and_repeat(encoder, x0_enc_gpu, sigma, n_noise, batch_size):
 
 def run_experiment(args):
     torch.manual_seed(args.seed)
+    rng    = np.random.default_rng(args.seed)
     device = args.device
 
     print(f"Loading {args.dataset} ...")
     x0_small, x0_enc, U_gpu, n_classes, d_small = load_dataset(
         args.dataset, args.n_samples, device
     )
-    N = len(x0_small)
+    N      = len(x0_small)
+    labels = U_gpu.argmax(dim=1)          # (N,) integer class labels
 
     print("Building ResNet18 encoder ...")
     encoder = build_encoder(device)
+
+    # Pre-compute class statistics (for class-conditional Wiener)
+    print("Computing class statistics ...")
+    class_stats   = fit_class_stats(x0_small, labels, n_classes)
+    class_counts  = torch.tensor([s[2] for s in class_stats], device=device)
 
     sigma_grid = np.logspace(
         np.log10(args.sigma_min), np.log10(args.sigma_max), args.n_sigma
     )
 
-    results = {'sigma': sigma_grid, 'linear_uncond': [], 'linear_cond': [], 'resnet_uncond': []}
+    results = {
+        'sigma':              sigma_grid,
+        'linear_uncond':      [],
+        'linear_cond':        [],
+        'wiener_class_cond':  [],   # class-conditional Wiener (Gaussian within class)
+        'knn_cond':           [],   # k-NN Bayes-optimal MMSE approximation
+        'resnet_uncond':      [],
+    }
     for mode in args.modes:
         results[f'resnet_cond_{mode}'] = []
 
     print(f"Sweeping {args.n_sigma} sigma values ...")
     for sigma in tqdm(sigma_grid):
 
-        # 1. Wiener filter (pixel-space, GPU)
+        # 1a. Global Wiener filter (pixel-space, GPU)
         lin = wiener_gpu(x0_small, sigma)
         results['linear_uncond'].append(lin['loss'])
 
-        # Conditional Wiener: phi = [x0 + noise ; U]
-        Z_lin = torch.randn_like(x0_small) * sigma
-        Y_lin = x0_small + Z_lin
+        # 1b. Global conditional Wiener: phi = [y ; U]
+        Z_lin        = torch.randn_like(x0_small) * sigma
+        Y_lin        = x0_small + Z_lin
         Phi_lin_cond = torch.cat([Y_lin, U_gpu], dim=1)
         lin_c = mmse_gpu(Phi_lin_cond, x0_small, lam=args.lam)
         results['linear_cond'].append(lin_c['loss'])
 
+        # 1c. Class-conditional Wiener (Gaussian within class — theoretical lower bound for linear+U)
+        wcc = wiener_class_cond_gpu(class_stats, sigma, class_counts)
+        results['wiener_class_cond'].append(wcc['loss'])
+
+        # 1d. k-NN conditional mean (nonparametric Bayes-optimal approximation)
+        knn = knn_cond_mean_loss(x0_small, labels, sigma, k=10, n_eval=2000, rng=rng)
+        results['knn_cond'].append(knn['loss'])
+
         # 2. ResNet18 features (GPU)
         Phi_gpu = extract_and_repeat(encoder, x0_enc, sigma, args.n_noise, args.batch_size)
-        # (N*n_noise, k) features; repeat x0 and U to match
-        X0_rep  = x0_small.repeat_interleave(args.n_noise, dim=0)   # (N*n_noise, d_small)
-        U_rep   = U_gpu.repeat_interleave(args.n_noise, dim=0)       # (N*n_noise, n_classes)
+        X0_rep  = x0_small.repeat_interleave(args.n_noise, dim=0)
+        U_rep   = U_gpu.repeat_interleave(args.n_noise, dim=0)
 
         res_u = mmse_gpu(Phi_gpu, X0_rep, lam=args.lam)
         results['resnet_uncond'].append(res_u['loss'])
 
         # 3. Conditional ResNet18 (modes A/B/C)
-        # Move Phi to CPU for build_conditional_features, then back to GPU
         Phi_np = Phi_gpu.cpu().numpy()
         U_np   = U_rep.cpu().numpy()
         for mode in args.modes:
-            Phi_cond_np = build_conditional_features(Phi_np, U_np, mode=mode, k_u=args.k_u)
+            Phi_cond_np  = build_conditional_features(Phi_np, U_np, mode=mode, k_u=args.k_u)
             Phi_cond_gpu = torch.from_numpy(Phi_cond_np).to(device=device, dtype=torch.float32)
             res_c = mmse_gpu(Phi_cond_gpu, X0_rep, lam=args.lam)
             results[f'resnet_cond_{mode}'].append(res_c['loss'])
@@ -297,56 +436,78 @@ def run_experiment(args):
     return results
 
 
+def save_results(results, args):
+    """Save results to tables/ as .npz for later replotting."""
+    os.makedirs('tables', exist_ok=True)
+    tag  = f"{args.dataset}_N{args.n_samples}_noise{args.n_noise}_sigma{args.n_sigma}"
+    path = os.path.join('tables', f'dnn_feature_mmse_{tag}.npz')
+    np.savez(path, **results)
+    print(f"Results saved to {path}")
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Plotting
 # ---------------------------------------------------------------------------
 
 def plot_results(results, args):
     os.makedirs(args.save_dir, exist_ok=True)
-    sigma = results['sigma']
-
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
-    fig.suptitle(f'{args.dataset.upper()} | ResNet18 features | N={args.n_samples} x {args.n_noise} noise draws', fontsize=12)
-
-    ax = axes[0]
-    ax.plot(sigma, results['linear_uncond'], 'k--',  lw=2, label='Linear (Wiener)')
-    ax.plot(sigma, results['linear_cond'],   'k:',   lw=2, label='Linear + U')
-    ax.plot(sigma, results['resnet_uncond'], 'C0-o', lw=2, ms=5, label='ResNet18 uncond')
+    sigma  = results['sigma']
     colors = ['C1', 'C2', 'C3']
+
+    fig, axes = plt.subplots(1, 3, figsize=(17, 5))
+    fig.suptitle(
+        f'{args.dataset.upper()} | ResNet18 features | N={args.n_samples} x {args.n_noise} noise draws',
+        fontsize=12
+    )
+
+    # --- Panel 1: all loss curves ---
+    ax = axes[0]
+    ax.plot(sigma, results['knn_cond'],          'g-',   lw=2.5, label='k-NN E[x₀|y,U] (Bayes approx)')
+    ax.plot(sigma, results['wiener_class_cond'], 'g--',  lw=2,   label='Class-cond Wiener (Gaussian LB)')
+    ax.plot(sigma, results['linear_uncond'],     'k--',  lw=2,   label='Linear Wiener (uncond)')
+    ax.plot(sigma, results['linear_cond'],       'k:',   lw=2,   label='Linear Wiener + U')
+    ax.plot(sigma, results['resnet_uncond'],     'C0-o', lw=2, ms=4, label='ResNet18 uncond')
     for i, mode in enumerate(args.modes):
         ax.plot(sigma, results[f'resnet_cond_{mode}'], f'{colors[i]}-s',
-                lw=2, ms=5, label=f'ResNet18+U (mode {mode})')
+                lw=2, ms=4, label=f'ResNet18+U (mode {mode})')
     ax.set_xscale('log')
     ax.set_xlabel('sigma')
     ax.set_ylabel('MMSE loss')
     ax.set_title('Denoiser loss vs sigma')
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=7)
     ax.grid(True, alpha=0.3)
 
+    # --- Panel 2: DNN vs linear ---
     ax = axes[1]
     ax.plot(sigma, results['linear_uncond'] - results['resnet_uncond'],
-            'C0-o', lw=2, ms=5, label='ResNet gain over linear')
+            'C0-o', lw=2, ms=4, label='ResNet gain over Wiener')
     for i, mode in enumerate(args.modes):
         ax.plot(sigma, results['linear_cond'] - results[f'resnet_cond_{mode}'],
-                f'{colors[i]}-s', lw=2, ms=5, label=f'ResNet+U ({mode}) gain over linear+U')
+                f'{colors[i]}-s', lw=2, ms=4, label=f'ResNet+U ({mode}) gain over Wiener+U')
     ax.set_xscale('log')
     ax.set_xlabel('sigma')
-    ax.set_ylabel('Loss reduction')
-    ax.set_title('DNN gain over linear baseline')
-    ax.legend(fontsize=8)
+    ax.set_ylabel('Linear loss − DNN loss')
+    ax.set_title('DNN gain over linear (positive = DNN better)')
+    ax.legend(fontsize=7)
     ax.grid(True, alpha=0.3)
-    ax.axhline(0, color='k', lw=0.8)
+    ax.axhline(0, color='k', lw=1, ls='--')
 
+    # --- Panel 3: conditioning gain for each method ---
     ax = axes[2]
-    ax.plot(sigma, results['linear_uncond'] - results['linear_cond'],
-            'k--', lw=2, label='Linear: cond gain')
-    ax.plot(sigma, results['resnet_uncond'] - results[f'resnet_cond_{args.modes[0]}'],
-            'C0-o', lw=2, ms=5, label=f'ResNet: cond gain (mode {args.modes[0]})')
+    ax.plot(sigma, results['linear_uncond']     - results['wiener_class_cond'],
+            'g--', lw=2, label='Cond gain: class-cond Wiener')
+    ax.plot(sigma, results['linear_uncond']     - results['knn_cond'],
+            'g-',  lw=2, label='Cond gain: k-NN Bayes approx')
+    ax.plot(sigma, results['linear_uncond']     - results['linear_cond'],
+            'k:',  lw=2, label='Cond gain: linear+U')
+    ax.plot(sigma, results['resnet_uncond']     - results[f'resnet_cond_{args.modes[0]}'],
+            'C0-o', lw=2, ms=4, label=f'Cond gain: ResNet (mode {args.modes[0]})')
     ax.set_xscale('log')
     ax.set_xlabel('sigma')
-    ax.set_ylabel('L_sigma - L_{sigma,U}')
+    ax.set_ylabel('L_uncond − L_cond')
     ax.set_title('Conditioning gain from class label U')
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=7)
     ax.grid(True, alpha=0.3)
     ax.axhline(0, color='k', lw=0.8)
 
@@ -359,14 +520,16 @@ def plot_results(results, args):
 
 def print_summary(results, args):
     sigma = results['sigma']
-    mid = len(sigma) // 2
-    s = sigma[mid]
+    mid   = len(sigma) // 2
+    s     = sigma[mid]
     print(f"\n=== Summary at sigma={s:.3f} ===")
-    print(f"  Linear uncond:  {results['linear_uncond'][mid]:.4f}")
-    print(f"  Linear cond:    {results['linear_cond'][mid]:.4f}")
-    print(f"  ResNet uncond:  {results['resnet_uncond'][mid]:.4f}")
+    print(f"  k-NN Bayes approx:      {results['knn_cond'][mid]:.4f}  (lower bound on MMSE)")
+    print(f"  Class-cond Wiener:      {results['wiener_class_cond'][mid]:.4f}  (Gaussian-within-class LB)")
+    print(f"  Linear uncond (Wiener): {results['linear_uncond'][mid]:.4f}")
+    print(f"  Linear cond (Wiener+U): {results['linear_cond'][mid]:.4f}")
+    print(f"  ResNet uncond:          {results['resnet_uncond'][mid]:.4f}")
     for mode in args.modes:
-        print(f"  ResNet+U ({mode}): {results[f'resnet_cond_{mode}'][mid]:.4f}")
+        print(f"  ResNet+U ({mode}):        {results[f'resnet_cond_{mode}'][mid]:.4f}")
 
 
 if __name__ == '__main__':
@@ -374,4 +537,5 @@ if __name__ == '__main__':
     print(f"Device: {args.device}")
     results = run_experiment(args)
     print_summary(results, args)
+    save_results(results, args)
     plot_results(results, args)
