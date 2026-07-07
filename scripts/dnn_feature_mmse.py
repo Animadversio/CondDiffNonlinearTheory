@@ -222,42 +222,31 @@ def wiener_class_cond_gpu(
     labels: torch.Tensor,
     sigma: float,
     n_classes: int,
-    lam: float = 1e-4,
-    n_noise: int = 5,
+    lam: float = 1e-6,
 ) -> dict:
     """
-    Class-conditional optimal LINEAR denoiser MMSE, estimated via regression.
+    Class-conditional analytic Wiener filter MMSE — always non-negative.
 
-    For each class c, we generate y_c = x0_c + sigma*Z and fit the best linear
-    predictor x0_c from y_c using dual-form mmse_gpu. This gives:
-        MMSE_c = Tr(Sigma_c) - Tr(Cov(x0,y|c) Sigma_y_c^{-1} Cov(y,x0|c))
+    For each class c, computes the analytic LMMSE:
+        L_c = sum_i  sigma^2 * lambda_i^c / (lambda_i^c + sigma^2)
+    where lambda_i^c are eigenvalues of the within-class covariance Sigma_c.
 
-    This is always <= global linear+U because class-specific slopes are more
-    expressive. The dual form (N_c x N_c, N_c~1000) is well-conditioned
-    even when d=3072 >> N_c.
+    This is the same formula as wiener_gpu() applied per class.
+    It is provably non-negative and converges to Tr(Sigma_c) at high sigma.
 
-    Averaged over classes weighted by frequency.
+    Averaged over classes weighted by class frequency.
     """
-    device = x0_gpu.device
-    N      = len(x0_gpu)
+    N = len(x0_gpu)
     total_loss = 0.0
 
     for c in range(n_classes):
-        mask   = labels == c
-        x0_c   = x0_gpu[mask]           # (N_c, d)
-        N_c    = len(x0_c)
+        mask = labels == c
+        x0_c = x0_gpu[mask]   # (N_c, d)
+        N_c  = len(x0_c)
         if N_c < 2:
             continue
-        # Average over independent noise draws — do NOT repeat x0_c rows
-        # (repeat_interleave creates artificial correlation structure that
-        #  mmse_gpu exploits, giving spuriously low loss at high sigma)
-        total_loss_c = 0.0
-        for _ in range(n_noise):
-            Z   = torch.randn_like(x0_c) * sigma
-            Y_c = x0_c + Z
-            total_loss_c += mmse_gpu(Y_c, x0_c, lam=lam)['loss']
-        loss_c = total_loss_c / n_noise
-        total_loss += loss_c * N_c / N
+        result = wiener_gpu(x0_c, sigma, lam=lam)
+        total_loss += result['loss'] * N_c / N
 
     return dict(loss=total_loss)
 
@@ -470,7 +459,7 @@ def run_experiment(args):
         results['linear_cond'].append(lin_c['loss'])
 
         # 1c. Class-conditional Wiener via dual-form regression (unbiased, avoids Marchenko-Pastur)
-        wcc = wiener_class_cond_gpu(x0_small, labels, sigma, n_classes, lam=args.lam, n_noise=args.n_noise)
+        wcc = wiener_class_cond_gpu(x0_small, labels, sigma, n_classes, lam=args.lam)
         results['wiener_class_cond'].append(wcc['loss'])
 
         # 1d. Oracle Bayes conditional: pool = same class only  → LB on class-cond MMSE
