@@ -49,7 +49,7 @@ def parse_args():
     p.add_argument('--n_noise',    type=int,   default=5,
                    help='noise draws per image (increases effective N)')
     p.add_argument('--sigma_min',  type=float, default=0.02)
-    p.add_argument('--sigma_max',  type=float, default=2.0)
+    p.add_argument('--sigma_max',  type=float, default=100.0)
     p.add_argument('--n_sigma',    type=int,   default=20)
     p.add_argument('--lam',        type=float, default=1e-4,
                    help='ridge regularization')
@@ -213,7 +213,73 @@ def wiener_gpu(X0_t: torch.Tensor, sigma: float, lam: float = 1e-6) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Class-conditional Wiener filter — via dual-form regression per class
+# Analytic linear+U MMSE (Wiener filter with [y; U] features)
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def wiener_linear_u_precompute(x0_gpu: torch.Tensor, U_gpu: torch.Tensor) -> dict:
+    """
+    Precompute eigendecomposition of Sigma_p0 and cross-covariance C_xU.
+    Call once; pass the result to wiener_linear_u_loss() per sigma.
+    """
+    N = len(x0_gpu)
+    X0_c = x0_gpu - x0_gpu.mean(0)
+    U_c  = U_gpu  - U_gpu.mean(0)
+    Sigma_p0 = X0_c.T @ X0_c / (N - 1)     # (d, d)
+    C_xU     = X0_c.T @ U_c  / (N - 1)     # (d, n_c)
+    Sigma_U  = U_c.T  @ U_c  / (N - 1)     # (n_c, n_c)
+    eigvals, eigvecs = torch.linalg.eigh(Sigma_p0)   # ascending, (d,), (d,d)
+    eigvals = eigvals.clamp(min=0)
+    VtC = eigvecs.T @ C_xU                  # (d, n_c)
+    return dict(eigvals=eigvals, VtC=VtC, Sigma_U=Sigma_U,
+                trace_p0=float(eigvals.sum()))
+
+
+@torch.no_grad()
+def wiener_linear_u_loss(precomp: dict, sigma: float, lam: float = 1e-6) -> dict:
+    """
+    Analytic LMMSE loss for estimator using [y; U] features, always non-negative.
+
+    Derivation: the optimal linear estimator of x0 from [y=x0+σZ; U] has loss
+
+        L = L_wiener_uncond − Tr(Q · Schur⁻¹)
+
+    where:
+        a_i    = λᵢ / (λᵢ + σ²)            (signal-to-total ratio per eigenmode)
+        Q      = VᵀC · diag((1−a)²) · VᵀC^T   (n_c × n_c, always PSD)
+        Schur  = Σ_U − VᵀC · diag(1/(λ+σ²)) · VᵀC^T   (Schur complement, n_c × n_c)
+
+    This is always non-negative and converges to within-class variance at σ→∞.
+    At σ→∞ both this and wiener_class_cond converge to the same within-class variance.
+    At finite σ, wiener_class_cond ≤ this because per-class slopes are more expressive.
+    """
+    eigvals = precomp['eigvals']
+    VtC     = precomp['VtC']
+    Sigma_U = precomp['Sigma_U']
+    n_c     = Sigma_U.shape[0]
+    device  = eigvals.device
+    dtype   = eigvals.dtype
+
+    inv_y = 1.0 / (eigvals + sigma ** 2 + lam)      # (d,)
+    a     = eigvals * inv_y                           # λ/(λ+σ²)
+
+    # Unconditional Wiener loss
+    L_uncond = precomp['trace_p0'] - float((eigvals ** 2 * inv_y).sum())
+
+    # Q = VtC^T diag((1-a)^2) VtC  [n_c x n_c]
+    Q = VtC.T @ (((1 - a) ** 2)[:, None] * VtC)
+
+    # Schur complement of Sigma_y in joint [[Sigma_y, C_xU],[C_xU^T, Sigma_U]]
+    CyC   = VtC.T @ (inv_y[:, None] * VtC)          # C_xU^T Sigma_y^{-1} C_xU
+    Schur = Sigma_U - CyC + lam * torch.eye(n_c, device=device, dtype=dtype)
+    Schur_inv = torch.linalg.inv(Schur)
+
+    u_correction = float(torch.trace(Q @ Schur_inv))
+    return dict(loss=L_uncond - u_correction)
+
+
+# ---------------------------------------------------------------------------
+# Class-conditional Wiener filter — analytic per-class eigendecomposition
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
@@ -432,11 +498,15 @@ def run_experiment(args):
         np.log10(args.sigma_min), np.log10(args.sigma_max), args.n_sigma
     )
 
+    # Precompute analytic linear+U quantities (eigendecomp of Sigma_p0, cross-cov C_xU)
+    print("Precomputing analytic linear+U Wiener quantities ...")
+    linear_u_precomp = wiener_linear_u_precompute(x0_small, U_gpu)
+
     results = {
         'sigma':              sigma_grid,
         'linear_uncond':      [],
-        'linear_cond':        [],
-        'wiener_class_cond':  [],   # class-conditional Wiener via dual-form regression
+        'linear_cond':        [],   # analytic LMMSE for [y; U] (shared slope A, class bias BU)
+        'wiener_class_cond':  [],   # analytic LMMSE per class (per-class slope A^c)
         'bayes_cond':         [],   # oracle Bayes, pool = same class (LB on cond MMSE)
         'bayes_uncond':       [],   # oracle Bayes, pool = all classes (LB on uncond MMSE)
         'resnet_uncond':      [],
@@ -447,15 +517,13 @@ def run_experiment(args):
     print(f"Sweeping {args.n_sigma} sigma values ...")
     for sigma in tqdm(sigma_grid):
 
-        # 1a. Global Wiener filter (pixel-space, GPU)
+        # 1a. Global Wiener filter (pixel-space, GPU) — analytic
         lin = wiener_gpu(x0_small, sigma)
         results['linear_uncond'].append(lin['loss'])
 
-        # 1b. Global conditional Wiener: phi = [y ; U]
-        Z_lin        = torch.randn_like(x0_small) * sigma
-        Y_lin        = x0_small + Z_lin
-        Phi_lin_cond = torch.cat([Y_lin, U_gpu], dim=1)
-        lin_c = mmse_gpu(Phi_lin_cond, x0_small, lam=args.lam)
+        # 1b. Analytic conditional Wiener: optimal linear estimator from [y; U]
+        #     Shared slope A, class-specific bias via B*U. Always non-negative.
+        lin_c = wiener_linear_u_loss(linear_u_precomp, sigma, lam=args.lam)
         results['linear_cond'].append(lin_c['loss'])
 
         # 1c. Class-conditional Wiener via dual-form regression (unbiased, avoids Marchenko-Pastur)
