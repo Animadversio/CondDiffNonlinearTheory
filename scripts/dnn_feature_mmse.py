@@ -784,21 +784,28 @@ def plot_results(results, args):
 
     # --- Panel 3: conditioning gain for each method ---
     ax = axes[2]
-    ax.plot(sigma, results['linear_uncond']     - results['wiener_class_cond'],
-            'g--', lw=2, label='Cond gain: class-cond Wiener')
-    ax.plot(sigma, results['linear_uncond']     - results['bayes_cond'],
-            'g-',  lw=2, label='Cond gain: Oracle Bayes (cond LB)')
+    # Gains relative to linear_uncond baseline (mixing nonlinearity + conditioning)
     ax.plot(sigma, results['linear_uncond']     - results['bayes_uncond'],
-            'b-',  lw=2, label='Gain: Oracle Bayes (uncond LB)')
+            'b--', lw=2, label='Oracle Bayes uncond vs linear_uncond\n(nonlinearity gain, no class label)')
+    ax.plot(sigma, results['linear_uncond']     - results['bayes_cond'],
+            'b-',  lw=2, label='Oracle Bayes cond vs linear_uncond\n(nonlinearity + conditioning gain)')
+    # Direct oracle conditioning gain: how much does class label help within oracle Bayes
+    bayes_cond_arr   = np.array(results['bayes_cond'])
+    bayes_uncond_arr = np.array(results['bayes_uncond'])
+    ax.plot(sigma, np.abs(bayes_uncond_arr - bayes_cond_arr),
+            'b:', lw=2.5, label='|Oracle Bayes uncond − cond|\n(pure conditioning gain within oracle)')
+    # Conditioning gains for linear/DNN methods (relative to their own uncond baseline)
+    ax.plot(sigma, results['linear_uncond']     - results['wiener_class_cond'],
+            'g--', lw=2, label='Class-cond Wiener vs linear_uncond\n(cond gain, analytic per-class)')
     ax.plot(sigma, results['linear_uncond']     - results['linear_cond'],
-            'k:',  lw=2, label='Cond gain: linear+U')
+            'k:',  lw=2, label='Linear+U vs linear_uncond\n(cond gain, shared slope)')
     ax.plot(sigma, results['resnet_uncond']     - results[f'resnet_cond_{args.modes[0]}'],
-            'C0-o', lw=2, ms=4, label=f'Cond gain: ResNet (mode {args.modes[0]})')
+            'C0-o', lw=2, ms=4, label=f'ResNet+U (mode {args.modes[0]}) vs ResNet uncond\n(cond gain within ResNet)')
     ax.set_xscale('log')
     ax.set_xlabel('sigma')
-    ax.set_ylabel('L_uncond − L_cond')
-    ax.set_title('Conditioning gain from class label U')
-    ax.legend(fontsize=7)
+    ax.set_ylabel('L_method_uncond − L_method_cond')
+    ax.set_title('Conditioning gain from class label U\n(positive = class label helps)')
+    ax.legend(fontsize=6.5)
     ax.grid(True, alpha=0.3)
     ax.axhline(0, color='k', lw=0.8)
 
