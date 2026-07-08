@@ -28,6 +28,7 @@ import argparse
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as T
 import matplotlib
@@ -231,7 +232,7 @@ def wiener_linear_u_precompute(x0_gpu: torch.Tensor, U_gpu: torch.Tensor) -> dic
     eigvals, eigvecs = torch.linalg.eigh(Sigma_p0)   # ascending, (d,), (d,d)
     eigvals = eigvals.clamp(min=0)
     VtC = eigvecs.T @ C_xU                  # (d, n_c)
-    return dict(eigvals=eigvals, VtC=VtC, Sigma_U=Sigma_U,
+    return dict(eigvals=eigvals, eigvecs=eigvecs, VtC=VtC, Sigma_U=Sigma_U,
                 trace_p0=float(eigvals.sum()))
 
 
@@ -468,6 +469,147 @@ def extract_and_repeat(encoder, x0_enc_gpu, sigma, n_noise, batch_size):
 
 
 # ---------------------------------------------------------------------------
+# Combined [y_pixel ; phi_enc] estimator via Schur complement
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def extract_combined_stats(encoder, x0_small, sigma, n_noise, batch_size, dataset_name):
+    """
+    Add noise at original (32x32) pixel resolution; accumulate statistics
+    needed for the Schur-based combined MMSE without materialising the
+    full (N*n_noise, d) noisy-image matrix.
+
+    Returns a dict with:
+        Phi_total     : (N, k)   sum of encoder outputs over n_noise draws
+        YTphi_total   : (d, k)   sum of Y_m^T @ Phi_m  over draws
+        PhiTphi_total : (k, k)   sum of Phi_m^T @ Phi_m over draws
+        NM            : int      N * n_noise
+    """
+    N, d = x0_small.shape
+    device = x0_small.device
+
+    if dataset_name == 'cifar10':
+        C, H, W = 3, 32, 32
+    elif dataset_name == 'mnist':
+        C, H, W = 1, 28, 28
+    else:
+        raise ValueError(f"Unknown dataset: {dataset_name}")
+
+    x0_img = x0_small.reshape(N, C, H, W)
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).reshape(1, 3, 1, 1)
+    std  = torch.tensor([0.229, 0.224, 0.225], device=device).reshape(1, 3, 1, 1)
+
+    # We don't know k until the first encoder call; initialise after
+    Phi_total     = None
+    YTphi_total   = None
+    PhiTphi_total = None
+
+    for _ in range(n_noise):
+        Z     = torch.randn_like(x0_img) * sigma
+        Y_img = x0_img + Z                          # (N, C, H, W), may exceed [0,1]
+        Y_flat = Y_img.reshape(N, d)                # keep UNclamped for cross-cov
+
+        # Prepare encoder input: clamp → expand to 3ch → resize → ImageNet-norm
+        Y_enc = Y_img.clamp(0.0, 1.0)
+        if C == 1:
+            Y_enc = Y_enc.expand(-1, 3, -1, -1).contiguous()
+        Y_enc = F.interpolate(Y_enc, size=224, mode='bilinear', align_corners=False)
+        Y_enc = (Y_enc - mean) / std
+
+        phi_chunks = []
+        for start in range(0, N, batch_size):
+            end = min(start + batch_size, N)
+            with torch.cuda.amp.autocast():
+                phi = encoder(Y_enc[start:end].half())
+            phi_chunks.append(phi.float())
+        Phi_m = torch.cat(phi_chunks, 0)   # (N, k)
+        k = Phi_m.shape[1]
+
+        if Phi_total is None:
+            Phi_total     = torch.zeros(N, k, device=device)
+            YTphi_total   = torch.zeros(d, k, device=device)
+            PhiTphi_total = torch.zeros(k, k, device=device)
+
+        Phi_total     += Phi_m
+        YTphi_total   += Y_flat.T @ Phi_m          # (d, k)
+        PhiTphi_total += Phi_m.T  @ Phi_m          # (k, k)
+
+    return dict(Phi_total=Phi_total, YTphi_total=YTphi_total,
+                PhiTphi_total=PhiTphi_total, NM=N * n_noise)
+
+
+@torch.no_grad()
+def mmse_combined_schur(stats, x0_small, eigvals, eigvecs, sigma, lam=1e-4):
+    """
+    MMSE for combined [y_pixel ; phi_enc(y)] feature via Schur complement.
+
+    Decomposition:
+        L_combined = L_Wiener(analytic)  −  Gain(phi_enc | y_pixel)
+
+    where the gain uses partial covariance (Schur complement of Sigma_y):
+        C_part    = Cov(x0, phi) − Sigma_x0 Sigma_y^{-1} Cov(y, phi)    (d × k)
+        S_phi     = Var(phi)    − Cov(y,phi)^T Sigma_y^{-1} Cov(y,phi)   (k × k)
+        Gain      = Tr(C_part (S_phi + lam I)^{-1} C_part^T)
+
+    Sigma_y^{-1} applied analytically via eigendecomp of Sigma_x0.
+    Only a k×k system (k=512) needs to be solved — never d×d.
+
+    Properties:
+        L_combined ≤ L_Wiener        (Gain ≥ 0 always)
+        L_combined ≤ L_ResNet_uncond (combined feature space ⊇ phi alone)
+    """
+    NM = stats['NM']
+    N  = len(x0_small)
+    device = x0_small.device
+
+    Phi_total     = stats['Phi_total']       # (N, k)
+    YTphi_total   = stats['YTphi_total']     # (d, k)
+    PhiTphi_total = stats['PhiTphi_total']   # (k, k)
+    k = Phi_total.shape[1]
+
+    mu_x0  = x0_small.mean(0)               # (d,)
+    mu_phi = Phi_total.sum(0) / NM          # (k,) global mean across all draws
+
+    # --- Centred sample covariances (unbiased denominator NM-1) ---
+    # Cov(x0, phi) = E[x0 phi^T] - mu_x0 mu_phi^T
+    CxPhi  = x0_small.T @ Phi_total / NM   # (d, k)
+    CxPhi  = CxPhi - mu_x0[:, None] * mu_phi[None, :]
+
+    # Cov(y, phi) = E[y phi^T] - mu_y mu_phi^T,  mu_y = mu_x0 (E[Z]=0)
+    CyPhi  = YTphi_total / NM               # (d, k)
+    CyPhi  = CyPhi - mu_x0[:, None] * mu_phi[None, :]
+
+    # Var(phi) = E[phi phi^T] - mu_phi mu_phi^T
+    SigPhi = PhiTphi_total / NM             # (k, k)
+    SigPhi = SigPhi - mu_phi[:, None] * mu_phi[None, :]
+
+    # --- Analytic Sigma_y^{-1} = V diag(1/(lambda+sigma^2)) V^T ---
+    inv_y = 1.0 / (eigvals + sigma ** 2 + lam)           # (d,)
+
+    VtCyPhi      = eigvecs.T @ CyPhi                      # (d, k)
+    InvSy_CyPhi  = eigvecs @ (inv_y[:, None] * VtCyPhi)  # (d, k)
+
+    # --- Partial covariance: Cov(x0, phi | y) ---
+    a = eigvals * inv_y                                    # lambda/(lambda+sigma^2), (d,)
+    Sigma_x0_InvSy_CyPhi = eigvecs @ (a[:, None] * VtCyPhi)   # (d, k)
+    C_part = CxPhi - Sigma_x0_InvSy_CyPhi                 # (d, k)
+
+    # --- Schur complement: Var(phi | y) ---
+    S_phi = SigPhi - CyPhi.T @ InvSy_CyPhi               # (k, k)
+
+    # --- Gain = Tr(C_part (S_phi + lam I)^{-1} C_part^T) ---
+    reg  = S_phi + lam * torch.eye(k, device=device)
+    A    = torch.linalg.solve(reg, C_part.T)              # (k, d)
+    gain = float((C_part * A.T).sum())                    # = Tr(C_part A^T)
+
+    # --- Analytic Wiener loss ---
+    trace_p0 = float(eigvals.sum())
+    L_wiener  = trace_p0 - float((eigvals ** 2 * inv_y).sum())
+
+    return dict(loss=max(0.0, L_wiener - gain), L_wiener=L_wiener, gain=gain)
+
+
+# ---------------------------------------------------------------------------
 # Main experiment
 # ---------------------------------------------------------------------------
 
@@ -499,8 +641,11 @@ def run_experiment(args):
     )
 
     # Precompute analytic linear+U quantities (eigendecomp of Sigma_p0, cross-cov C_xU)
+    # eigvecs are also used by the combined [y;phi] Schur estimator
     print("Precomputing analytic linear+U Wiener quantities ...")
     linear_u_precomp = wiener_linear_u_precompute(x0_small, U_gpu)
+    eigvals_p0 = linear_u_precomp['eigvals']    # (d,)  reused by mmse_combined_schur
+    eigvecs_p0 = linear_u_precomp['eigvecs']    # (d,d) reused by mmse_combined_schur
 
     results = {
         'sigma':              sigma_grid,
@@ -510,6 +655,7 @@ def run_experiment(args):
         'bayes_cond':         [],   # oracle Bayes, pool = same class (LB on cond MMSE)
         'bayes_uncond':       [],   # oracle Bayes, pool = all classes (LB on uncond MMSE)
         'resnet_uncond':      [],
+        'linear_plus_dnn':    [],   # Schur: L_Wiener − Gain(phi_enc | y_pixel)
     }
     for mode in args.modes:
         results[f'resnet_cond_{mode}'] = []
@@ -561,6 +707,14 @@ def run_experiment(args):
             res_c = mmse_gpu(Phi_cond_gpu, X0_rep, lam=args.lam)
             results[f'resnet_cond_{mode}'].append(res_c['loss'])
 
+        # 4. Combined [y_pixel; phi_enc] — consistent 32x32 noise, Schur decomposition
+        combo_stats = extract_combined_stats(
+            encoder, x0_small, sigma, args.n_noise, args.batch_size, args.dataset
+        )
+        combo = mmse_combined_schur(combo_stats, x0_small, eigvals_p0, eigvecs_p0,
+                                    sigma, lam=args.lam)
+        results['linear_plus_dnn'].append(combo['loss'])
+
     for k in results:
         if k != 'sigma':
             results[k] = np.array(results[k])
@@ -600,6 +754,7 @@ def plot_results(results, args):
     ax.plot(sigma, results['linear_uncond'],     'k--',  lw=2,   label='Linear Wiener (uncond)')
     ax.plot(sigma, results['linear_cond'],       'k:',   lw=2,   label='Linear Wiener + U')
     ax.plot(sigma, results['resnet_uncond'],     'C0-o', lw=2, ms=4, label='ResNet18 uncond')
+    ax.plot(sigma, results['linear_plus_dnn'],  'm-^',  lw=2, ms=4, label='Linear+DNN combined [y;phi]')
     for i, mode in enumerate(args.modes):
         ax.plot(sigma, results[f'resnet_cond_{mode}'], f'{colors[i]}-s',
                 lw=2, ms=4, label=f'ResNet18+U (mode {mode})')
@@ -614,6 +769,8 @@ def plot_results(results, args):
     ax = axes[1]
     ax.plot(sigma, results['linear_uncond'] - results['resnet_uncond'],
             'C0-o', lw=2, ms=4, label='ResNet gain over Wiener')
+    ax.plot(sigma, results['linear_uncond'] - results['linear_plus_dnn'],
+            'm-^', lw=2, ms=4, label='Combined [y;phi] gain over Wiener')
     for i, mode in enumerate(args.modes):
         ax.plot(sigma, results['linear_cond'] - results[f'resnet_cond_{mode}'],
                 f'{colors[i]}-s', lw=2, ms=4, label=f'ResNet+U ({mode}) gain over Wiener+U')
@@ -663,6 +820,7 @@ def print_summary(results, args):
     print(f"  Linear uncond (Wiener): {results['linear_uncond'][mid]:.4f}")
     print(f"  Linear cond (Wiener+U): {results['linear_cond'][mid]:.4f}")
     print(f"  ResNet uncond:          {results['resnet_uncond'][mid]:.4f}")
+    print(f"  Linear+DNN combined:    {results['linear_plus_dnn'][mid]:.4f}  ([y_pixel; phi_enc], Schur)")
     for mode in args.modes:
         print(f"  ResNet+U ({mode}):        {results[f'resnet_cond_{mode}'][mid]:.4f}")
 
