@@ -448,22 +448,41 @@ def bayes_optimal_cond_loss(*args, **kwargs):
 
 
 @torch.no_grad()
-def extract_and_repeat(encoder, x0_enc_gpu, sigma, n_noise, batch_size):
+def extract_and_repeat(encoder, x0_small, sigma, n_noise, batch_size, dataset_name):
     """
-    Add noise to encoder input (GPU), run forward pass, return (N*n_noise, k) features.
-    x0_enc_gpu: (N, C, 224, 224) fp16 on GPU
+    Add noise at PIXEL resolution (same noise model as oracle Bayes), then encode.
+    x0_small: (N, d) float32 pixel-space [0,1]
+    Returns: (N*n_noise, k) features fp32 GPU
     """
-    N = len(x0_enc_gpu)
+    N, d = x0_small.shape
+    device = x0_small.device
+    if dataset_name == 'cifar10':
+        C, H, W = 3, 32, 32
+    elif dataset_name == 'mnist':
+        C, H, W = 1, 28, 28
+    else:
+        raise ValueError(f"Unknown dataset: {dataset_name}")
+
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).reshape(1, 3, 1, 1)
+    std  = torch.tensor([0.229, 0.224, 0.225], device=device).reshape(1, 3, 1, 1)
+    x0_img = x0_small.reshape(N, C, H, W)
+
     phi_list = []
     chunk = max(1, batch_size // n_noise)
     for start in range(0, N, chunk):
-        end    = min(start + chunk, N)
-        x_b    = x0_enc_gpu[start:end]
-        x_rep  = x_b.repeat_interleave(n_noise, dim=0)
-        Z      = torch.randn_like(x_rep) * sigma
-        y      = x_rep + Z
+        end   = min(start + chunk, N)
+        x_b   = x0_img[start:end]
+        x_rep = x_b.repeat_interleave(n_noise, dim=0)      # (B*n_noise, C, H, W)
+        Z     = torch.randn_like(x_rep) * sigma
+        Y_img = x_rep + Z                                   # noise at pixel scale
+        # clamp → 3ch → resize → ImageNet-normalise
+        Y_enc = Y_img.clamp(0.0, 1.0)
+        if C == 1:
+            Y_enc = Y_enc.expand(-1, 3, -1, -1).contiguous()
+        Y_enc = F.interpolate(Y_enc.float(), size=224, mode='bilinear', align_corners=False)
+        Y_enc = (Y_enc - mean) / std
         with torch.cuda.amp.autocast():
-            phi = encoder(y)      # (B*n_noise, k) fp16
+            phi = encoder(Y_enc.half())
         phi_list.append(phi.float())
     return torch.cat(phi_list, dim=0)   # (N*n_noise, k) fp32 GPU
 
@@ -690,8 +709,8 @@ def run_experiment(args):
         )
         results['bayes_uncond'].append(bayes_u['loss'])
 
-        # 2. ResNet18 features (GPU)
-        Phi_gpu = extract_and_repeat(encoder, x0_enc, sigma, args.n_noise, args.batch_size)
+        # 2. ResNet18 features (GPU) — noise at 32x32 pixel level (consistent with oracle Bayes)
+        Phi_gpu = extract_and_repeat(encoder, x0_small, sigma, args.n_noise, args.batch_size, args.dataset)
         X0_rep  = x0_small.repeat_interleave(args.n_noise, dim=0)
         U_rep   = U_gpu.repeat_interleave(args.n_noise, dim=0)
 
