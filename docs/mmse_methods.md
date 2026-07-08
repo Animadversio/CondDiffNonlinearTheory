@@ -106,7 +106,35 @@ At $\sigma \to \infty$: weights become uniform over all $N$ samples $\Rightarrow
 
 ---
 
-## 6. ResNet18 Unconditional Features (`resnet_uncond`)
+## 6. Combined Linear + DNN Features (`linear_plus_dnn`)
+
+**Math.** Feature vector $\phi(y) = [y;\, \phi_{\text{enc}}(y)]$ — concatenation of raw pixels and ResNet18 features. The best linear predictor of $x_0$ from this joint feature achieves loss:
+
+$$L_{\text{combined}} = L_{\text{uncond}} - \underbrace{\operatorname{Tr}\!\left(Q\, S^{-1}\right)}_{\text{DNN gain given }y}$$
+
+where the **DNN gain** is computed via the Schur complement of $\Sigma_y$ in the joint covariance of $[y;\, \phi_{\text{enc}}(y)]$. Specifically, let $V$ be the eigenvectors of $\Sigma_{x_0}$ and define:
+
+$$C_{\text{part},ij} = \frac{1}{N}\sum_n (x_{0,n} - \bar{x}_0)_i\,(\phi_n - \bar\phi)_j - \sum_k \frac{\lambda_k}{\lambda_k+\sigma^2}\,(V^\top)_{ki}\,(V^\top C_{x_0,\phi})_{kj}$$
+
+This is the **partial cross-covariance** of $x_0$ and $\phi_{\text{enc}}$ after projecting out the component already explained by $y$ (via the Wiener filter). Then:
+
+$$Q = C_{\text{part}}^\top C_{\text{part}}, \qquad S = \hat\Sigma_\phi - (V \operatorname{diag}(\tfrac{\lambda}{\lambda+\sigma^2}) V^\top)\, C_{x_0,\phi} - C_{x_0,\phi}^\top\, (V \operatorname{diag}(\tfrac{\lambda}{\lambda+\sigma^2}) V^\top) + C_{x_0,\phi}^\top \Sigma_y^{-1} C_{x_0,\phi}$$
+
+where $S$ is the Schur complement of $\Sigma_y$ in the joint covariance $\Sigma_{[y,\phi]}$ (a $k\times k = 512\times 512$ system, never requiring a $d\times d$ inversion).
+
+The gain $\operatorname{Tr}(Q S^{-1}) \ge 0$ always, so $L_{\text{combined}} \le L_{\text{uncond}}$.
+
+**Noise model.** Noise is added at 32×32 pixel resolution (same as Oracle Bayes), then the noisy image is resized and normalized for the encoder — ensuring $\sigma$ is directly comparable across all curves.
+
+**Asymptotic limits.**
+- $\sigma \to 0$: $L_{\text{combined}} \to 0$ (perfect reconstruction from clean pixels $y \approx x_0$).
+- $\sigma \to \infty$: gain $\to 0$ (noisy features become uninformative), $L_{\text{combined}} \to L_{\text{uncond}} \to \operatorname{Tr}(\Sigma_{x_0})$.
+
+**Code.** `extract_combined_stats(encoder, x0_small, sigma, n_noise, batch_size)` — accumulates sufficient statistics $(\hat\Sigma_\phi,\, C_{x_0,\phi},\, C_{y,\phi})$ over $n_{\text{noise}}$ draws without materialising the full matrix. `mmse_combined_schur(stats, x0_small, eigvals, eigvecs, sigma)` — computes the Schur complement and returns `loss`.
+
+---
+
+## 7. ResNet18 Unconditional Features (`resnet_uncond`)
 
 **Math.** Encoder $\phi_{\text{enc}}: y \mapsto \mathbb{R}^{512}$ (ResNet18 penultimate layer, ImageNet pretrained). The loss is estimated as the in-sample regression loss:
 
@@ -147,12 +175,14 @@ Loss estimated via the same in-sample regression formula as `resnet_uncond`.
 | `wiener_class_cond` | Per-class linear $\hat{x} = A^c y + b^c$ | Analytic eigdecomp per class | Yes | Within-class var $\approx 177$ |
 | `bayes_cond` | Exact nonlinear, same-class pool | Softmax kernel regression | Yes | Within-class var $\approx 177$ |
 | `bayes_uncond` | Exact nonlinear, full pool | Softmax kernel regression | Yes | Total var $\approx 191$ |
-| `resnet_uncond` | Linear readout from ResNet18 | In-sample regression | Approx (lam) | $> 0$ |
-| `resnet_cond_A/B/C` | Linear readout from ResNet18 + $U$ | In-sample regression | Approx (lam) | $> 0$ |
+| `linear_plus_dnn` | Linear readout from $[y;\,\phi_{\text{enc}}(y)]$ | Analytic Schur complement | Yes | Total var $\approx 191$ |
+| `resnet_uncond` | Linear readout from ResNet18 features only | In-sample regression | Approx (lam) | $\approx$ Total var |
+| `resnet_cond_A/B/C` | Linear readout from ResNet18 + $U$ | In-sample regression | Approx (lam) | $\approx$ Within-class var |
 
-Inequalities at all $\sigma$:
+Inequalities at all $\sigma$ (analytic curves):
 $$L_{\text{bayes\_cond}} \le L_{\text{wiener\_class\_cond}} \le L_{\text{linear\_cond}} \le L_{\text{linear\_uncond}}$$
 $$L_{\text{bayes\_uncond}} \le L_{\text{linear\_uncond}}$$
+$$L_{\text{linear\_plus\_dnn}} \le L_{\text{linear\_uncond}}$$
 
 ---
 
