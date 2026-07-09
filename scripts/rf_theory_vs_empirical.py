@@ -3,20 +3,20 @@ Random-Feature Denoiser: Theory vs Empirical (newfile2.tex validation)
 
 Compares three ways to compute L_sigma for phi(y) = relu(Theta y):
 
-  1. Theoretical (Gaussian/Stein): uses sample mu_x0 and Sigma_p0 as Gaussian
-     parameters, then applies Stein's lemma for Cov(x0,phi) and the Hermite
-     expansion for Sigma_phi (truncated at n=2).
+  1. Empirical closed-form: stream covariance stats over noise draws, plug into
+     L = Tr(Sigma_p0) - Tr(C Sigma_phi^{-1} C^T). Never stores full (N*n_noise, k).
 
-  2. Empirical closed-form: sample covariance estimates on CIFAR training data
-     plugged into L = Tr(Sigma_p0) - Tr(C Sigma_phi^{-1} C^T). Current code.
-
-  3. Empirical direct: compute W* = C_hat Sigma_phi_hat^{-1} from train data,
+  2. Empirical direct: compute W* = C_hat Sigma_phi_hat^{-1} from train data,
      evaluate ||W* phi(y_test) + b* - x0_test||^2 on held-out test set.
 
-Also computes the conditional versions with phi^U(y,U) = relu(Theta y + Gamma U).
+  3. Theory (exact): uses actual data distribution for x0 expectations (no Gaussian
+     p0 assumption). Only the noise Z integral uses Hermite expansion (exact since Z
+     is Gaussian). See newfile2.tex §1 and docs/rf_methods.md.
+
+K is configurable via env var K (default 512). Use K=8192 for k > d experiments.
 """
 
-import sys, os
+import sys, os, argparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
@@ -31,21 +31,33 @@ from scipy.stats import norm as scipy_norm
 from tqdm import tqdm
 
 # ---------------------------------------------------------------------------
-# Config
+# Config (overridable via env vars)
 # ---------------------------------------------------------------------------
 STORE    = os.environ.get('STORE_DIR', '/n/holylfs06/LABS/kempner_fellow_binxuwang/Users/binxuwang')
 DATASETS = os.path.join(STORE, 'Datasets')
-device   = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-N_TRAIN   = 10000   # training samples (use first N from train split)
-N_TEST    = 5000    # test samples (from test split)
-K         = 512     # random feature dim
-N_NOISE   = 5       # noise draws per image for empirical estimate
-LAM       = 1e-4    # ridge regularization
-N_SIGMA   = 25
-SIGMA_MIN = 0.01
-SIGMA_MAX = 100.0
+def _get_device():
+    if not torch.cuda.is_available():
+        return 'cpu'
+    try:
+        torch.zeros(1).cuda()
+        return 'cuda'
+    except RuntimeError:
+        return 'cpu'
+
+device = _get_device()
+
+N_TRAIN   = int(os.environ.get('N_TRAIN', '10000'))
+N_TEST    = int(os.environ.get('N_TEST',  '5000'))
+K         = int(os.environ.get('K',       '512'))
+N_NOISE   = int(os.environ.get('N_NOISE', '5'))
+LAM       = float(os.environ.get('LAM',   '1e-4'))
+N_SIGMA   = int(os.environ.get('N_SIGMA', '25'))
+SIGMA_MIN = float(os.environ.get('SIGMA_MIN', '0.01'))
+SIGMA_MAX = float(os.environ.get('SIGMA_MAX', '100.0'))
 N_CLASSES = 10
+
+print(f"Config: K={K}, N_TRAIN={N_TRAIN}, N_NOISE={N_NOISE}, device={device}")
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -60,139 +72,154 @@ def load_cifar10_flat(split, n_max, device):
         labs.append(lab)
         if len(xs) >= n_max:
             break
-    x = torch.stack(xs).to(device)     # (N, 3072)
+    x = torch.stack(xs).to(device)
     y = torch.tensor(labs, device=device, dtype=torch.long)
     return x, y
 
 
 # ---------------------------------------------------------------------------
-# MMSE closed-form (empirical covariance estimate)
+# Streaming covariance accumulator — avoids storing full (N*n_noise, k) matrix
+# ---------------------------------------------------------------------------
+class CovAccum:
+    """
+    Accumulates sufficient statistics for Cov(x0, phi) and Sigma_phi
+    from multiple noise draws without stacking them.
+
+    Statistics accumulated (all in float64 for numerical stability):
+      - sum_phi:      (k,)    = sum_n phi_n
+      - sum_x0_phiT: (d, k)  = sum_n x0_c_n phi_n^T
+      - sum_phiphiT: (k, k)  = sum_n phi_n phi_n^T
+      - n_total:     int     = total number of (x0, phi) pairs seen
+    """
+    def __init__(self, d, k, device):
+        self.d = d
+        self.k = k
+        self.device = device
+        self.sum_phi      = torch.zeros(k, device=device, dtype=torch.float64)
+        self.sum_x0_phiT  = torch.zeros(d, k, device=device, dtype=torch.float64)
+        self.sum_phiphiT  = torch.zeros(k, k, device=device, dtype=torch.float64)
+        self.n_total      = 0
+
+    @torch.no_grad()
+    def add(self, phi, x0_c):
+        """phi: (N, k), x0_c: (N, d) centered x0."""
+        phi64 = phi.double()
+        x0_c64 = x0_c.double()
+        self.sum_phi     += phi64.sum(0)
+        self.sum_x0_phiT += x0_c64.T @ phi64
+        self.sum_phiphiT += phi64.T @ phi64
+        self.n_total     += phi.shape[0]
+
+    @torch.no_grad()
+    def covariances(self, lam):
+        """Returns (Cov_x0_phi, Sigma_phi) in float32 with ridge lam."""
+        n = self.n_total
+        mu_phi = self.sum_phi / n                              # (k,)
+        Cov_x0_phi = (self.sum_x0_phiT / n).float()           # (d, k)
+        Sigma_phi  = (self.sum_phiphiT / n
+                      - mu_phi.unsqueeze(1) * mu_phi.unsqueeze(0)
+                      + lam * torch.eye(self.k, device=self.device,
+                                        dtype=torch.float64)).float()  # (k, k)
+        return Cov_x0_phi, Sigma_phi, mu_phi.float()
+
+
+# ---------------------------------------------------------------------------
+# MMSE from pre-computed covariances
 # ---------------------------------------------------------------------------
 @torch.no_grad()
-def mmse_empirical_closedform(Phi, X0, lam):
-    """L = Tr(Sig_x0) - Tr(C Sig_phi^{-1} C^T) via sample covariances."""
-    N, k = Phi.shape
-    N2, d = X0.shape
-    assert N == N2
-    X0_c  = X0  - X0.mean(0)
-    Phi_c = Phi - Phi.mean(0)
-    trace_p0 = float((X0_c ** 2).sum() / (N - 1))
-    if k <= N:
-        Sigma_phi = (Phi_c.T @ Phi_c) / (N - 1) + lam * torch.eye(k, device=Phi.device)
-        Cov       = (X0_c.T  @ Phi_c) / (N - 1)      # (d, k)
-        A         = torch.linalg.solve(Sigma_phi, Cov.T)
-        explained = float(torch.trace(Cov @ A))
-    else:
-        K_mat = (Phi_c @ Phi_c.T) / (N - 1) + lam * torch.eye(N, device=Phi.device)
-        M     = torch.linalg.solve(K_mat, X0_c)
-        explained = float((X0_c * M).sum()) / (N - 1)
+def mmse_from_covs(trace_p0, Cov_x0_phi, Sigma_phi):
+    """L = Tr(Sigma_p0) - Tr(C Sigma_phi^{-1} C^T)."""
+    A = torch.linalg.solve(Sigma_phi, Cov_x0_phi.T)   # (k, d)
+    explained = float(torch.trace(Cov_x0_phi @ A))
     return max(0.0, trace_p0 - explained)
 
 
 # ---------------------------------------------------------------------------
-# Empirical direct: compute W* from train, evaluate on test
+# Empirical direct: compute W* from stats, evaluate on test features
 # ---------------------------------------------------------------------------
 @torch.no_grad()
-def mmse_empirical_direct(Phi_train, X0_train, Phi_test, X0_test, lam):
-    """Compute W* from train covariances, evaluate MSE on test data."""
-    N, k = Phi_train.shape
-    X0_c   = X0_train  - X0_train.mean(0)
-    Phi_c  = Phi_train - Phi_train.mean(0)
-    mu_x0  = X0_train.mean(0)
-    mu_phi = Phi_train.mean(0)
-    if k <= N:
-        Sigma_phi = (Phi_c.T @ Phi_c) / (N - 1) + lam * torch.eye(k, device=Phi_train.device)
-        Cov       = (X0_c.T  @ Phi_c) / (N - 1)
-        W_star    = torch.linalg.solve(Sigma_phi, Cov.T).T  # (d, k)
-    else:
-        K_mat  = (Phi_c @ Phi_c.T) / (N - 1) + lam * torch.eye(N, device=Phi_train.device)
-        M      = torch.linalg.solve(K_mat, X0_c)  # (N, d)
-        W_star = (Phi_c.T @ M) / (N - 1)          # (k, d)
-        W_star = W_star.T                           # (d, k)
-    b_star = mu_x0 - W_star @ mu_phi   # (d,)
-    # Evaluate on test
-    pred = (Phi_test - mu_phi) @ W_star.T + mu_x0  # (N_test, d)
-    # sum over d dims, mean over test samples — matches Tr(Sigma_residual) scale
+def mmse_empirical_direct(Cov_x0_phi, Sigma_phi, mu_phi, mu_x0,
+                           Phi_test, X0_test):
+    W_star = torch.linalg.solve(Sigma_phi, Cov_x0_phi.T).T  # (d, k)
+    b_star = mu_x0 - W_star @ mu_phi
+    pred = (Phi_test - mu_phi) @ W_star.T + mu_x0            # (N_test, d)
     mse  = float(((pred - X0_test) ** 2).sum(1).mean(0))
     return mse
 
 
-
 # ---------------------------------------------------------------------------
-# Exact theory using data distribution (no Gaussian p_0 assumption)
+# Theory: empirical p0 + Hermite for noise (no Gaussian p0 assumption)
+# Follows newfile2.tex §1 exactly. See docs/rf_methods.md.
 # ---------------------------------------------------------------------------
-# Key insight from newfile2.tex: the E_{x0,U}[...] integrals can be computed
-# empirically from the actual data distribution. Only the E_Z[...] (noise)
-# integral needs Hermite expansion — and Z IS Gaussian so that's exact.
-#
-# Sigma_phi = Cov_{x0}(g) + rho * (C1^T C1 / N) + 2*rho^2 * (C2^T C2 / N)
-# where rho_ij = sigma^2 theta_i theta_j / (s_i s_j) is the NOISE-ONLY correlation.
-# The data variation is captured exactly in Cov_{x0}(g), no Gaussian approx needed.
-
 @torch.no_grad()
-def mmse_theory_data_uncond(Theta, x0_train, trace_p0, sigma, lam):
+def mmse_theory_uncond(Theta, x0_train, trace_p0, sigma, lam):
     """
-    Exact theory for uncond RF: uses actual data distribution for x0 expectations.
-    No Gaussian assumption on p0. Only Hermite expansion is for noise Z (exact).
+    Exact theory for unconditional RF phi(y) = relu(Theta y).
+    No Gaussian assumption on p0 (uses actual data for E_{x0}).
+    Hermite expansion only for noise Z (which IS Gaussian — exact).
 
-    g_j(x0) = E_Z[relu(theta_j x0 + s_j xi)] = M_j Phi(z_j) + s_j phi(z_j)
-    Cov(x0, phi)  = X0_c^T G_c / N            (empirical, exact)
-    Sigma_phi = Cov_{x0}(G) + rho * (C1^T C1 / N) + 2*rho^2 * (C2^T C2 / N)
+    From newfile2.tex §1:
+      g_j(x0) = c0(M_j, s_j) = M_j Phi(z_j) + s_j phi(z_j)   [Gaussian-blurred ReLU]
+      c1(M_j, s_j) = (1/1!) E[f(xi) He_1(xi)] = s_j Phi(z_j)  [He_1 = xi]
+      c2(M_j, s_j) = (1/2!) E[f(xi) He_2(xi)] = s_j phi(z_j)/2 [He_2 = xi^2-1]
+      rho_ij = Corr(xi_i, xi_j) = theta_i^T theta_j / (||theta_i|| ||theta_j||)
+
+      Cov(x0, phi)_{ij} = E_{x0}[(x0_i - mu_i) g_j(x0)]
+      Sigma_phi,ij = Cov_{x0}(g_i, g_j) + E_{x0}[sum_{n>=1} n! rho^n c_n_i c_n_j]
     """
     N, d = x0_train.shape
     k = Theta.shape[0]
     dev = x0_train.device
 
     mu_x0 = x0_train.mean(0)
-    X0_c  = x0_train - mu_x0                   # (N, d)
+    X0_c  = x0_train - mu_x0                    # (N, d)
 
-    # Pre-activation mean for each sample: M_j^(n) = theta_j x0^(n)
-    M = x0_train @ Theta.T                      # (N, k)
+    # M_j^(n) = theta_j^T x0^(n) — noiseless pre-activation mean
+    M = x0_train @ Theta.T                       # (N, k)
 
-    # Noise std per feature: s_j = sigma * ||theta_j||
-    s = sigma * (Theta * Theta).sum(1).sqrt()   # (k,)
-    z = M / s.unsqueeze(0)                      # (N, k)
+    # s_j = sigma * ||theta_j|| — noise std in pre-activation
+    s = sigma * (Theta * Theta).sum(1).sqrt()    # (k,)
+    z = M / s.unsqueeze(0)                       # (N, k)
 
-    z_np  = z.cpu().numpy()
-    Phi_z = torch.tensor(scipy_norm.cdf(z_np), device=dev, dtype=x0_train.dtype)  # (N,k)
-    phi_z = torch.tensor(scipy_norm.pdf(z_np), device=dev, dtype=x0_train.dtype)  # (N,k)
+    z_np  = z.cpu().float().numpy()
+    Phi_z = torch.tensor(scipy_norm.cdf(z_np), device=dev, dtype=torch.float32)  # (N,k)
+    phi_z = torch.tensor(scipy_norm.pdf(z_np), device=dev, dtype=torch.float32)  # (N,k)
 
-    # g_j^(n) = c0 = M_j Phi(z) + s_j phi(z)   (N, k)
-    G = M * Phi_z + s.unsqueeze(0) * phi_z     # (N, k)
+    # g_j^(n) = c0(M_j, s_j) = M_j Phi(z_j) + s_j phi(z_j)
+    G  = M * Phi_z + s.unsqueeze(0) * phi_z     # (N, k)
+    # Hermite coefficients c1, c2 per sample per feature
+    C1 = s.unsqueeze(0) * Phi_z                  # (N, k)   c1 = s Phi(z)
+    C2 = s.unsqueeze(0) * phi_z / 2.0            # (N, k)   c2 = s phi(z) / 2
 
-    # Hermite coefficients (per sample per feature)
-    C1 = s.unsqueeze(0) * Phi_z                # (N, k)   c1 = s Phi(z)
-    C2 = s.unsqueeze(0) * phi_z / 2.0          # (N, k)   c2 = s phi(z)/2
+    # Cov(x0, phi)_{ij} = E_{x0}[(x0_i - mu_i) g_j(x0)]
+    Cov_x0_phi = X0_c.T @ G / N                 # (d, k)   [centered by X0_c, tower property]
 
-    # Cov(x0, phi) = X0_c^T G_c / N
-    G_c = G - G.mean(0)                        # (N, k)
-    Cov_x0_phi = X0_c.T @ G_c / N             # (d, k)
+    # Sigma_phi = Cov_{x0}(G) + noise Hermite terms
+    G_c       = G - G.mean(0)
+    Sig_data  = G_c.T @ G_c / N                  # (k, k)   Cov_{x0}(g_i, g_j)
 
-    # Data part of Sigma_phi: Cov_{x0}(G)
-    Sig_data = G_c.T @ G_c / N                 # (k, k)
+    # rho_ij = theta_i^T theta_j / (||theta_i|| ||theta_j||)
+    # [sigma cancels: s_i s_j = sigma^2 ||theta_i|| ||theta_j||]
+    norm = (Theta * Theta).sum(1).sqrt()          # (k,)
+    rho  = (Theta @ Theta.T) / (norm.unsqueeze(1) * norm.unsqueeze(0))  # (k, k)
+    rho  = rho.clamp(-1 + 1e-7, 1 - 1e-7)
 
-    # Noise-only correlation rho_ij = sigma^2 theta_i theta_j / (s_i s_j)
-    ThetaThetaT = Theta @ Theta.T              # (k, k)
-    rho = sigma**2 * ThetaThetaT / (s.unsqueeze(1) * s.unsqueeze(0))  # (k, k)
-    rho = rho.clamp(-1+1e-7, 1-1e-7)
-
-    # Noise part: Hermite n=1,2 terms
-    EC1C1 = C1.T @ C1 / N                     # (k, k)   E[c1_i c1_j]
-    EC2C2 = C2.T @ C2 / N                     # (k, k)   E[c2_i c2_j]
+    # E_{x0}[n! rho^n c_n_i c_n_j] for n=1,2
+    EC1C1 = C1.T @ C1 / N                        # E[c1_i c1_j]
+    EC2C2 = C2.T @ C2 / N                        # E[c2_i c2_j]
     Sig_noise = rho * EC1C1 + 2.0 * rho**2 * EC2C2
 
-    Sigma_phi = Sig_data + Sig_noise + lam * torch.eye(k, device=dev, dtype=x0_train.dtype)
+    Sigma_phi = Sig_data + Sig_noise + lam * torch.eye(k, device=dev)
 
-    A         = torch.linalg.solve(Sigma_phi, Cov_x0_phi.T)   # (k, d)
-    explained = float(torch.trace(Cov_x0_phi @ A))
-    return max(0.0, trace_p0 - explained)
+    return mmse_from_covs(trace_p0, Cov_x0_phi, Sigma_phi)
 
 
 @torch.no_grad()
-def mmse_theory_data_cond(Theta, Gamma, x0_train, U_train, trace_p0, sigma, lam):
+def mmse_theory_cond(Theta, Gamma, x0_train, U_train, trace_p0, sigma, lam):
     """
-    Exact theory for conditional RF: phi^U_j = relu(theta_j x0 + gamma_j U + s_j xi).
-    Uses actual (x0, U) data distribution for all x0 expectations.
+    Theory for conditional RF: phi^U_j = relu(theta_j x0 + gamma_j U + s_j xi).
+    Same structure: M^U_j = theta_j x0 + gamma_j U, s_j = sigma ||theta_j||.
+    rho_ij = theta_i^T theta_j / (||theta_i|| ||theta_j||) unchanged (no noise from U).
     """
     N, d = x0_train.shape
     k = Theta.shape[0]
@@ -201,38 +228,34 @@ def mmse_theory_data_cond(Theta, Gamma, x0_train, U_train, trace_p0, sigma, lam)
     mu_x0 = x0_train.mean(0)
     X0_c  = x0_train - mu_x0
 
-    # Pre-activation mean: M_j^(n) = theta_j x0^(n) + gamma_j U^(n)
     M = x0_train @ Theta.T + U_train @ Gamma.T   # (N, k)
-
-    s = sigma * (Theta * Theta).sum(1).sqrt()     # (k,)  noise-only std
+    s = sigma * (Theta * Theta).sum(1).sqrt()     # (k,)
     z = M / s.unsqueeze(0)                        # (N, k)
 
-    z_np  = z.cpu().numpy()
-    Phi_z = torch.tensor(scipy_norm.cdf(z_np), device=dev, dtype=x0_train.dtype)
-    phi_z = torch.tensor(scipy_norm.pdf(z_np), device=dev, dtype=x0_train.dtype)
+    z_np  = z.cpu().float().numpy()
+    Phi_z = torch.tensor(scipy_norm.cdf(z_np), device=dev, dtype=torch.float32)
+    phi_z = torch.tensor(scipy_norm.pdf(z_np), device=dev, dtype=torch.float32)
 
-    G  = M * Phi_z + s.unsqueeze(0) * phi_z      # (N, k)  g_j^(n)
-    C1 = s.unsqueeze(0) * Phi_z                   # (N, k)
-    C2 = s.unsqueeze(0) * phi_z / 2.0             # (N, k)
+    G  = M * Phi_z + s.unsqueeze(0) * phi_z
+    C1 = s.unsqueeze(0) * Phi_z
+    C2 = s.unsqueeze(0) * phi_z / 2.0
 
-    G_c = G - G.mean(0)
-    Cov_x0_phi = X0_c.T @ G_c / N                 # (d, k)
+    Cov_x0_phi = X0_c.T @ G / N
 
-    Sig_data  = G_c.T @ G_c / N                   # (k, k)
+    G_c       = G - G.mean(0)
+    Sig_data  = G_c.T @ G_c / N
 
-    ThetaThetaT = Theta @ Theta.T                 # (k, k)
-    rho = sigma**2 * ThetaThetaT / (s.unsqueeze(1) * s.unsqueeze(0))
-    rho = rho.clamp(-1+1e-7, 1-1e-7)
+    norm = (Theta * Theta).sum(1).sqrt()
+    rho  = (Theta @ Theta.T) / (norm.unsqueeze(1) * norm.unsqueeze(0))
+    rho  = rho.clamp(-1 + 1e-7, 1 - 1e-7)
 
     EC1C1 = C1.T @ C1 / N
     EC2C2 = C2.T @ C2 / N
     Sig_noise = rho * EC1C1 + 2.0 * rho**2 * EC2C2
 
-    Sigma_phi = Sig_data + Sig_noise + lam * torch.eye(k, device=dev, dtype=x0_train.dtype)
+    Sigma_phi = Sig_data + Sig_noise + lam * torch.eye(k, device=dev)
 
-    A         = torch.linalg.solve(Sigma_phi, Cov_x0_phi.T)
-    explained = float(torch.trace(Cov_x0_phi @ A))
-    return max(0.0, trace_p0 - explained)
+    return mmse_from_covs(trace_p0, Cov_x0_phi, Sigma_phi)
 
 
 # ---------------------------------------------------------------------------
@@ -248,125 +271,151 @@ def main():
     U_test  = F.one_hot(y_test,  N_CLASSES).float()
 
     print("Pre-computing data statistics ...")
-    X0_c    = x0_train - x0_train.mean(0)
+    mu_x0   = x0_train.mean(0)
+    X0_c    = x0_train - mu_x0
     Sigma_p0 = X0_c.T @ X0_c / (N_TRAIN - 1)
     trace_p0 = float(Sigma_p0.diagonal().sum())
-    # Linear Wiener baseline needs eigdecomp
-    eigvals, _ = torch.linalg.eigh(Sigma_p0)
-    eigvals = eigvals.clamp(min=0)
+    # Use numpy eigh (avoids MKL SSYEVD bug on CPU with large matrices)
+    import numpy as np
+    eigvals_np = np.linalg.eigvalsh(Sigma_p0.cpu().numpy())
+    eigvals = torch.tensor(eigvals_np, dtype=torch.float32, device=device).clamp(min=0)
+
+    # Pre-compute per-class eigenvalues for conditional linear Wiener baseline
+    # L_cond_wiener = (1/C) sum_c sum_k sigma^2 lambda_{c,k} / (lambda_{c,k} + sigma^2)
+    # Use kernel trick: eigvals of (Nc x Nc) kernel = eigvals of (d x d) class cov
+    print("Pre-computing per-class eigenvalues for conditional Wiener ...")
+    class_eigvals = []
+    for c in range(N_CLASSES):
+        mask = (y_train == c)
+        Xc = x0_train[mask]
+        Nc = Xc.shape[0]
+        Xc_c = (Xc - Xc.mean(0)).cpu().numpy().astype(np.float64)
+        # Kernel matrix eigenvalues (Nc x Nc, much cheaper than d x d)
+        kern_c = (Xc_c @ Xc_c.T) / (Nc - 1)
+        ev = np.linalg.eigvalsh(kern_c)
+        class_eigvals.append(torch.tensor(ev, dtype=torch.float32, device=device).clamp(min=0))
+    print(f"  Class sizes: {[int((y_train==c).sum()) for c in range(N_CLASSES)]}")
 
     # Fixed random feature matrices
-    Theta = torch.randn(K, d, device=device) / (d ** 0.5)    # (k, d)
+    Theta = torch.randn(K, d, device=device) / (d ** 0.5)        # (k, d)
     Gamma = torch.randn(K, N_CLASSES, device=device) / (N_CLASSES ** 0.5)  # (k, 10)
 
     sigma_grid = np.logspace(np.log10(SIGMA_MIN), np.log10(SIGMA_MAX), N_SIGMA)
 
     res = {k: [] for k in [
         'linear_wiener',
-        'rf_uncond_empirical_cf',   # empirical closed-form (train covariances)
-        'rf_uncond_empirical_dir',  # empirical direct (W* on test)
-        'rf_uncond_theory',         # theory: empirical p0, Hermite for noise only
+        'linear_wiener_cond',
+        'rf_uncond_empirical_cf',
+        'rf_uncond_empirical_dir',
+        'rf_uncond_theory',
         'rf_cond_empirical_cf',
         'rf_cond_empirical_dir',
         'rf_cond_theory',
     ]}
 
-    print(f"Sweeping {N_SIGMA} sigma values ...")
+    print(f"Sweeping {N_SIGMA} sigma values with K={K}, N_NOISE={N_NOISE} ...")
     for sigma in tqdm(sigma_grid):
 
-        # --- Linear Wiener baseline (analytic) ---
-        inv_y = 1.0 / (eigvals + sigma**2 + 1e-6)
+        # --- Unconditional linear Wiener (analytic) ---
+        inv_y   = 1.0 / (eigvals + sigma**2 + 1e-6)
         L_wiener = float(trace_p0 - (eigvals**2 * inv_y).sum())
         res['linear_wiener'].append(max(0.0, L_wiener))
 
-        # --- Accumulate feature statistics over n_noise draws ---
-        Phi_train_list, X0_rep_list = [], []
-        Phi_cond_train_list = []
-        for _ in range(N_NOISE):
-            Z   = torch.randn_like(x0_train) * sigma
-            Y   = x0_train + Z                         # (N, d) noisy train
-            phi_u = F.relu(Y @ Theta.T)                # (N, k)
-            phi_c = F.relu(Y @ Theta.T + U_train @ Gamma.T)  # (N, k)
-            Phi_train_list.append(phi_u)
-            X0_rep_list.append(x0_train)
-            Phi_cond_train_list.append(phi_c)
-        Phi_tr = torch.cat(Phi_train_list, 0)          # (N*n_noise, k)
-        Phi_c_tr = torch.cat(Phi_cond_train_list, 0)
-        X0_rep   = torch.cat(X0_rep_list, 0)           # (N*n_noise, d)
+        # --- Conditional linear Wiener: average over classes ---
+        # L_c(sigma) = sum_k sigma^2 * lambda_{c,k} / (lambda_{c,k} + sigma^2)
+        sig2 = sigma ** 2
+        L_wiener_cond = 0.0
+        for ev_c in class_eigvals:
+            L_wiener_cond += float((sig2 * ev_c / (ev_c + sig2)).sum())
+        L_wiener_cond /= N_CLASSES
+        res['linear_wiener_cond'].append(max(0.0, L_wiener_cond))
 
-        # Test features (single noise draw, fresh)
+        # --- Accumulate empirical covariance stats (streaming — no full N*n_noise,k matrix) ---
+        accum_u = CovAccum(d, K, device)   # unconditional
+        accum_c = CovAccum(d, K, device)   # conditional
+
+        for _ in range(N_NOISE):
+            Z = torch.randn_like(x0_train) * sigma
+            Y = x0_train + Z
+            phi_u = F.relu(Y @ Theta.T)                         # (N, k)
+            phi_c = F.relu(Y @ Theta.T + U_train @ Gamma.T)    # (N, k)
+            accum_u.add(phi_u, X0_c)
+            accum_c.add(phi_c, X0_c)
+            del phi_u, phi_c, Y, Z
+
+        Cov_u, Sig_u, mu_phi_u = accum_u.covariances(LAM)
+        Cov_c, Sig_c, mu_phi_c = accum_c.covariances(LAM)
+
+        # --- Test features (one fresh draw) ---
         Z_test = torch.randn_like(x0_test) * sigma
         Y_test = x0_test + Z_test
-        Phi_test = F.relu(Y_test @ Theta.T)
-        Phi_c_test = F.relu(Y_test @ Theta.T + U_test @ Gamma.T)
+        Phi_test_u = F.relu(Y_test @ Theta.T)
+        Phi_test_c = F.relu(Y_test @ Theta.T + U_test @ Gamma.T)
+        del Z_test, Y_test
 
-        # --- Uncond empirical closed-form ---
-        L_ecf = mmse_empirical_closedform(Phi_tr, X0_rep, LAM)
-        res['rf_uncond_empirical_cf'].append(L_ecf)
+        # --- Uncond empirical CF ---
+        res['rf_uncond_empirical_cf'].append(mmse_from_covs(trace_p0, Cov_u, Sig_u))
 
         # --- Uncond empirical direct ---
-        L_edir = mmse_empirical_direct(Phi_tr, X0_rep, Phi_test, x0_test, LAM)
-        res['rf_uncond_empirical_dir'].append(L_edir)
+        res['rf_uncond_empirical_dir'].append(
+            mmse_empirical_direct(Cov_u, Sig_u, mu_phi_u, mu_x0, Phi_test_u, x0_test))
 
-        # --- Uncond theory: empirical p0, Hermite for noise only ---
-        L_th = mmse_theory_data_uncond(Theta, x0_train, trace_p0, sigma, LAM)
-        res['rf_uncond_theory'].append(L_th)
+        # --- Uncond theory ---
+        res['rf_uncond_theory'].append(
+            mmse_theory_uncond(Theta, x0_train, trace_p0, sigma, LAM))
 
-        # --- Cond empirical closed-form ---
-        L_c_ecf = mmse_empirical_closedform(Phi_c_tr, X0_rep, LAM)
-        res['rf_cond_empirical_cf'].append(L_c_ecf)
+        # --- Cond empirical CF ---
+        res['rf_cond_empirical_cf'].append(mmse_from_covs(trace_p0, Cov_c, Sig_c))
 
         # --- Cond empirical direct ---
-        L_c_edir = mmse_empirical_direct(Phi_c_tr, X0_rep, Phi_c_test, x0_test, LAM)
-        res['rf_cond_empirical_dir'].append(L_c_edir)
+        res['rf_cond_empirical_dir'].append(
+            mmse_empirical_direct(Cov_c, Sig_c, mu_phi_c, mu_x0, Phi_test_c, x0_test))
 
-        # --- Cond theory: empirical (x0,U) distribution, Hermite for noise only ---
-        L_c_th = mmse_theory_data_cond(Theta, Gamma, x0_train, U_train, trace_p0, sigma, LAM)
-        res['rf_cond_theory'].append(L_c_th)
+        # --- Cond theory ---
+        res['rf_cond_theory'].append(
+            mmse_theory_cond(Theta, Gamma, x0_train, U_train, trace_p0, sigma, LAM))
+
+        del Phi_test_u, Phi_test_c, Cov_u, Sig_u, Cov_c, Sig_c
 
     # --- Save ---
     os.makedirs('tables', exist_ok=True)
-    np.savez('tables/rf_theory_vs_empirical_cifar10.npz',
+    tag = f'k{K}'
+    np.savez(f'tables/rf_theory_vs_empirical_cifar10_{tag}.npz',
              sigma=sigma_grid, **{k: np.array(v) for k, v in res.items()})
 
     # --- Plot ---
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-    fig.suptitle('Random-Feature Denoiser: Theory vs Empirical (CIFAR-10)\n'
+    fig.suptitle(f'Random-Feature Denoiser: Theory vs Empirical (CIFAR-10, k={K})\n'
                  r'$\phi(y) = \mathrm{relu}(\Theta y)$, '
                  r'$\phi^U(y,U) = \mathrm{relu}(\Theta y + \Gamma U)$, '
-                 f'k={K}', fontsize=11)
+                 f'd={x0_train.shape[1]}', fontsize=11)
 
-    sigma = sigma_grid
+    sg = sigma_grid
 
-    # Panel 1: Unconditional
     ax = axes[0]
-    ax.plot(sigma, res['linear_wiener'],              'k-',   lw=2,   label='Linear Wiener (analytic)')
-    ax.plot(sigma, res['rf_uncond_empirical_cf'],     'b-',   lw=2,   label='RF uncond: Empirical closed-form')
-    ax.plot(sigma, res['rf_uncond_empirical_dir'],    'b-o',  lw=1.5, ms=4, label='RF uncond: Empirical direct (W* on test)')
-    ax.plot(sigma, res['rf_uncond_theory'],           'b--',  lw=2,   label='RF uncond: Theory (Hermite n≤2 for noise)')
-    ax.set_xscale('log')
-    ax.set_xlabel('sigma'); ax.set_ylabel('MSE loss')
-    ax.set_title('Unconditional: L_sigma')
+    ax.plot(sg, res['linear_wiener'],           'k-',  lw=2,   label='Linear Wiener (analytic)')
+    ax.plot(sg, res['rf_uncond_empirical_cf'],  'b-',  lw=2,   label='RF uncond: Empirical CF')
+    ax.plot(sg, res['rf_uncond_empirical_dir'], 'b--', lw=1.5, label='RF uncond: Empirical direct (test)')
+    ax.plot(sg, res['rf_uncond_theory'],        'b:',  lw=2,   label='RF uncond: Theory (Hermite n≤2)')
+    ax.set_xscale('log'); ax.set_xlabel('sigma'); ax.set_ylabel('MSE loss')
+    ax.set_title(f'Unconditional: L_sigma  (k={K}, d={x0_train.shape[1]})')
     ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
 
-    # Panel 2: Conditional
     ax = axes[1]
-    ax.plot(sigma, res['linear_wiener'],              'k-',   lw=2,   label='Linear Wiener (analytic)')
-    ax.plot(sigma, res['rf_cond_empirical_cf'],       'r-',   lw=2,   label='RF cond: Empirical closed-form')
-    ax.plot(sigma, res['rf_cond_empirical_dir'],      'r-o',  lw=1.5, ms=4, label='RF cond: Empirical direct (W* on test)')
-    ax.plot(sigma, res['rf_cond_theory'],             'r--',  lw=2,   label='RF cond: Theory (Hermite n≤2 for noise)')
-    ax.set_xscale('log')
-    ax.set_xlabel('sigma'); ax.set_ylabel('MSE loss')
-    ax.set_title('Conditional: L_sigma,U')
+    ax.plot(sg, res['linear_wiener_cond'],     'k-',  lw=2,   label='Cond. Linear Wiener (class eigvals)')
+    ax.plot(sg, res['rf_cond_empirical_cf'],   'r-',  lw=2,   label='RF cond: Empirical CF')
+    ax.plot(sg, res['rf_cond_empirical_dir'],  'r--', lw=1.5, label='RF cond: Empirical direct (test)')
+    ax.plot(sg, res['rf_cond_theory'],         'r:',  lw=2,   label='RF cond: Theory (Hermite n≤2)')
+    ax.set_xscale('log'); ax.set_xlabel('sigma'); ax.set_ylabel('MSE loss')
+    ax.set_title(f'Conditional: L_sigma,U  (k={K}, d={x0_train.shape[1]})')
     ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     os.makedirs('figures', exist_ok=True)
-    path = 'figures/rf_theory_vs_empirical_cifar10.png'
+    path = f'figures/rf_theory_vs_empirical_cifar10_{tag}.png'
     plt.savefig(path, dpi=150, bbox_inches='tight')
     print(f"Saved {path}")
 
-    # Print summary
     mid = N_SIGMA // 2
     print(f"\n=== Summary at sigma={sigma_grid[mid]:.3f} ===")
     for key, v in res.items():
