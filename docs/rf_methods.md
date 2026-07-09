@@ -54,25 +54,32 @@ $$L = \mathrm{Tr}(\hat\Sigma_{p_0}) - \mathrm{Tr}\!\bigl(\widehat{\mathrm{Cov}}(
 
 ---
 
-## Method 3 — Gaussian/Stein Theory (`rf_*_theory`)
+## Method 3 — Theory: Empirical $p_0$ + Hermite for Noise (`rf_*_theory`)
 
-**What it does.** Treats $p_0$ as a Gaussian with the empirical mean $\hat\mu_{x_0}$ and covariance $\hat\Sigma_{p_0}$, then computes $\mathrm{Cov}(x_0,\phi)$ and $\Sigma_\phi$ *analytically* using Stein's lemma and the Hermite expansion of ReLU. See newfile2.tex, Sections 1–2 for the full derivation.
+**What it does.** Computes $\mathrm{Cov}(x_0,\phi)$ and $\Sigma_\phi$ using the *actual* data distribution for all $x_0$ expectations, and the Hermite expansion only for the Gaussian noise $Z$ (which is exact since $Z$ is Gaussian). No assumption is made on $p_0$. See newfile2.tex, Sections 1–2.
 
-**Key formulas.** For each feature $j$ with $\ell_j = \theta_j^\top y \mid x_0 \sim \mathcal{N}(M_j, s_j^2)$ where:
-$$M_j = \theta_j^\top x_0, \quad s_j^2 = \sigma^2\|\theta_j\|^2 + \theta_j^\top \Sigma_{p_0} \theta_j$$
+**Key idea.** For each feature $j$, the noise $Z$ enters only through the scalar $\xi = \theta_j^\top Z / \|\theta_j\| \sim \mathcal{N}(0,1)$, turning the $d$-dimensional noise integral into a 1D Gaussian integral:
 
-Hermite coefficients for ReLU (closed-form via Stein's identity):
-$$c_1(M_j, s_j) = s_j\,\Phi(z_j), \quad c_2(M_j, s_j) = \frac{s_j\,\varphi(z_j)}{2}, \qquad z_j = \frac{M_j}{s_j}$$
+$$\phi_j(x_0 + \sigma Z) = \mathrm{relu}(\underbrace{\theta_j^\top x_0}_{M_j(x_0)} + \underbrace{\sigma\|\theta_j\|}_{s_j}\,\xi)$$
 
-where $\Phi,\varphi$ are the standard normal CDF/PDF. Then:
+The expected feature value given $x_0$ (Gaussian-smoothed ReLU, computable analytically):
+$$g_j(x_0) = \mathbb{E}_Z[\phi_j(x_0 + \sigma Z)] = M_j\,\Phi(z_j) + s_j\,\varphi(z_j), \quad z_j = M_j / s_j$$
 
-$$\mathrm{Cov}(x_0,\phi)_{:j} = \Sigma_{p_0}\,\theta_j\,\Phi(z_j) \quad \text{(Stein's lemma)}$$
+**Formulas.** Hermite coefficients for ReLU (coefficients of the noise expansion):
+$$c_1(M_j, s_j) = s_j\,\Phi(z_j), \qquad c_2(M_j, s_j) = \tfrac{s_j\,\varphi(z_j)}{2}$$
 
-$$\Sigma_{\phi,ij} \approx \tilde r_{ij}\,c_{1,i}\,c_{1,j} + 2\tilde r_{ij}^2\,c_{2,i}\,c_{2,j} \quad \text{(Hermite truncated at }n=2\text{)}$$
+**Covariance** — sample average over the actual data, no Gaussian assumption:
+$$\mathrm{Cov}(x_0,\phi)_{ij} = \frac{1}{N}\sum_n (x_{0,i}^{(n)} - \bar x_0)\,g_j(x_0^{(n)})$$
 
-where $\tilde r_{ij} = \mathrm{Cov}(\ell_i, \ell_j)/(s_i s_j)$ is the pre-activation correlation.
+In matrix form with $G \in \mathbb{R}^{N\times k}$ where $G_{nj} = g_j(x_0^{(n)})$:
+$$\widehat{\mathrm{Cov}}(x_0, \phi) = \frac{1}{N} X_0^{c\top} G^c$$
 
-**Key property.** Fully analytic — no data needed beyond $(\hat\mu_{x_0}, \hat\Sigma_{p_0})$. Approximates $p_0$ as Gaussian and truncates the Hermite series at $n=2$. Validated to closely match empirical estimates (~85.7 vs 86.3 at $\sigma=0.71$).
+**Feature covariance** — variance decomposition (data part + noise part):
+$$\Sigma_\phi = \underbrace{\frac{1}{N}G^{c\top}G^c}_{\mathrm{Cov}_{x_0}(g_i, g_j)} + \underbrace{\rho \odot \frac{C_1^\top C_1}{N} + 2\rho^2 \odot \frac{C_2^\top C_2}{N}}_{\text{noise part: Hermite }n=1,2}$$
+
+where $\rho_{ij} = \sigma^2\,\theta_i^\top\theta_j / (s_i s_j)$ is the **noise-only** pre-activation correlation (from $Z$ only, not $x_0$), and $C_1, C_2 \in \mathbb{R}^{N\times k}$ are sample matrices of $c_1, c_2$ evaluated at each $x_0^{(n)}$.
+
+**Key property.** No Gaussian assumption on $p_0$. The Hermite expansion applies only to the noise $Z$ (which IS Gaussian — exact). The data variation of $g_j$ across the actual distribution is captured in $\mathrm{Cov}_{x_0}(G)$. Validated to closely match empirical estimates (~102.26 vs 102.45 at $\sigma=1.0$).
 
 ---
 
@@ -82,10 +89,13 @@ The conditional feature map is $\phi^U(y, U) = \mathrm{relu}(\Theta y + \Gamma U
 
 The empirical methods (1 & 2) apply without change — just replace $\phi(y)$ with $\phi^U(y,U)$.
 
-For the theory (Method 3), the derivation extends by treating $(x_0, U)$ as jointly Gaussian (approximation). The modified pre-activation variance becomes:
-$$\tilde s_j^2 = \theta_j^\top \Sigma_{p_0} \theta_j + 2\,\theta_j^\top C_{xU}\,\gamma_j + \gamma_j^\top \Sigma_U \gamma_j + \sigma^2\|\theta_j\|^2$$
+For the theory (Method 3), the same variance decomposition applies. The pre-activation mean per sample becomes:
+$$M^U_j(x_0, U) = \theta_j^\top x_0 + \gamma_j^\top U$$
 
-and $\mathrm{Cov}(x_0,\phi^U)_{:j} = (\Sigma_{p_0}\theta_j + C_{xU}\gamma_j)\,\Phi(\tilde z_j)$ where $C_{xU} = \mathrm{Cov}(x_0, U)$.
+with the noise std $s_j = \sigma\|\theta_j\|$ unchanged (noise enters only through $\theta_j^\top \sigma Z$). The Gaussian-smoothed feature is:
+$$g^U_j(x_0, U) = M^U_j\,\Phi(z^U_j) + s_j\,\varphi(z^U_j), \quad z^U_j = M^U_j / s_j$$
+
+and $\mathrm{Cov}(x_0, \phi^U)$, $\Sigma^U_\phi$ are computed via the same formula as the unconditional case, with $G_{nj} = g^U_j(x_0^{(n)}, U^{(n)})$ computed over the joint $(x_0, U)$ training distribution. No Gaussian assumption on $(x_0, U)$.
 
 ---
 
