@@ -1,0 +1,524 @@
+%% LyX 2.5.1 created this file.  For more info, see https://www.lyx.org/.
+%% Do not edit unless you really know what you are doing.
+\documentclass[twoside,onecolumn,american,compsoc]{IEEEtran}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{mathtools}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\makeatletter
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Textclass specific LaTeX commands.
+\numberwithin{equation}{section}
+\numberwithin{figure}{section}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% User specified LaTeX commands.
+\usepackage[left=1.4cm, right=1.5cm, top=1.5cm, bottom=1.5cm]{geometry}
+
+\makeatother
+
+\usepackage{babel}
+\begin{document}
+
+\section{Unconditional Non-linear denoiser}
+
+Random-feature model imposes a non-linear map on the input of the
+denoiser $\boldsymbol{y}$, however the denoiser output is still linear
+in this new non-linear feature map; let $\psi$ be a non-linear function,
+i.e. sigmoid, softmax, etc, $\Theta$ be a $\mathbb{R}^{d\times k}$
+random matrix, e.g Gaussian entries, $\epsilon$ be a $\mathbb{R}^{d}$
+random bias; all are fixed i.e. we're not learning these here, as
+opposed to the way a full neural network does. Then:
+\[
+\phi(\boldsymbol{y})=\omega(\Theta\boldsymbol{y}+\epsilon)
+\]
+
+And the denoiser w.r.t this new non-linear feature map is still:
+\[
+\boldsymbol{D}_{\theta}(\phi(\boldsymbol{y});\sigma,\boldsymbol{U})=\boldsymbol{W}_{\sigma}\phi(\boldsymbol{y})+\boldsymbol{b}_{\sigma}
+\]
+
+where $\boldsymbol{W}_{\sigma}$ and $\boldsymbol{b}_{\sigma}$ are
+learned. We have:
+\[
+\mathcal{L}_{\sigma}=\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}\|\boldsymbol{W}_{\sigma}\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})+\boldsymbol{b}_{\sigma}-\boldsymbol{x_{0}}\|^{2}_{2}
+\]
+
+Note that the denoiser is linear w.r.t the feature map so most of
+our derivations from the linear case still applies. Setting derivative
+w.r.t $\boldsymbol{b}_{\sigma}$ to $\boldsymbol{0}$:
+\begin{align*}
+\nabla_{\boldsymbol{b}_{\sigma}}\mathcal{L}_{\sigma} & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}\big[2(\boldsymbol{W}_{\sigma}\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})+\boldsymbol{b}_{\sigma}-\boldsymbol{x_{0}})\big]\\
+0 & =2(\boldsymbol{W}_{\sigma}\mu_{\phi}+\boldsymbol{b}_{\sigma}-\mu_{\boldsymbol{p_{0}}})
+\end{align*}
+
+where $\mu_{\phi}=\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}[\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})]$.
+So:
+\[
+\boldsymbol{b}^{*}_{\sigma}=\mu_{\boldsymbol{p_{0}}}-\boldsymbol{W}_{\sigma}\mu_{\phi}
+\]
+
+Similarly:
+\begin{align*}
+ & \nabla_{\boldsymbol{W}_{\sigma}}\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}\|\boldsymbol{W}_{\sigma}\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})+\boldsymbol{b}_{\sigma}-\boldsymbol{x_{0}}\|^{2}_{2}\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}\big[2(\boldsymbol{W}_{\sigma}\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})+\boldsymbol{b}_{\sigma}-\boldsymbol{x_{0}})\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})^{\top}\big]\\
+ & =2(\boldsymbol{W}_{\sigma}(\boldsymbol{\Sigma}_{\phi}+\mu_{\phi}\mu^{\top}_{\phi})+(\mu_{\boldsymbol{p_{0}}}-\boldsymbol{W}_{\sigma}\mu_{\phi})\mu_{\phi}-\mathbb{E}[\boldsymbol{x_{0}}\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})^{\top}])\\
+0 & =2(\boldsymbol{W}_{\sigma}(\boldsymbol{\Sigma}_{\phi})+\text{Cov}(\boldsymbol{x_{0}},\phi))
+\end{align*}
+
+where $\boldsymbol{\Sigma}_{\phi}=\text{Cov}(\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z}))$.
+So $\boldsymbol{W}^{*}_{\sigma}=\text{Cov}(\boldsymbol{x_{0}},\phi)\boldsymbol{\Sigma}^{-1}_{\phi}$.
+Then:
+\begin{align*}
+\mathcal{L}_{\sigma} & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}\|\boldsymbol{W}_{\sigma}(\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})-\mu_{\phi})-(\boldsymbol{x_{0}}-\mu_{\boldsymbol{p_{0}}})\|^{2}_{2}\\
+ & =\text{Tr}(\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}[\boldsymbol{W}_{\sigma}(\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})-\mu_{\phi})(\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})-\mu_{\phi})^{\top}\boldsymbol{W}^{\top}_{\sigma}]\\
+ & -2\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}[\boldsymbol{W}_{\sigma}(\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})-\mu_{\phi})(\boldsymbol{x_{0}}-\mu_{\boldsymbol{p_{0}}})^{\top}]+\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[(\boldsymbol{x_{0}}-\mu_{\boldsymbol{p_{0}}})(\boldsymbol{x_{0}}-\mu_{\boldsymbol{p_{0}}})^{\top}])\\
+ & =\text{Tr}(\boldsymbol{W}_{\sigma}\boldsymbol{\Sigma}_{\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})-\mu_{\phi}}\boldsymbol{W}^{\top}_{\sigma}-2\boldsymbol{W}_{\sigma}\text{Cov}(\boldsymbol{x_{0}},\phi)+\boldsymbol{\Sigma}_{\boldsymbol{x_{0}}-\mu_{\boldsymbol{p_{0}}}})\\
+ & =\text{Tr}(\boldsymbol{W}_{\sigma}\boldsymbol{\Sigma}_{\phi}\boldsymbol{W}^{\top}_{\sigma}-2\boldsymbol{W}_{\sigma}\text{Cov}(\boldsymbol{x_{0}},\phi)+\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})\\
+ & =\text{Tr}(\text{Cov}(\boldsymbol{x_{0}},\phi)\boldsymbol{\Sigma}^{-1}_{\phi}\boldsymbol{\Sigma}_{\phi}(\text{Cov}(\boldsymbol{x_{0}},\phi)\boldsymbol{\Sigma}^{-1}_{\phi})^{\top}-2\text{Cov}(\boldsymbol{x_{0}},\phi)\boldsymbol{\Sigma}^{-1}_{\phi}\text{Cov}(\boldsymbol{x_{0}},\phi)+\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})\\
+ & =\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}-\text{Cov}(\boldsymbol{x_{0}},\phi)\boldsymbol{\Sigma}^{-1}_{\phi}\text{Cov}(\phi,\boldsymbol{x_{0}}))
+\end{align*}
+
+where $\text{Cov}(\boldsymbol{x_{0}},\phi)=\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}[(\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})-\mu_{\phi})(\boldsymbol{x_{0}}-\mu_{\boldsymbol{p_{0}}})^{\top}]$
+
+Now if $\phi$ is Gaussian square-integrable w.r.t the Gaussian measure,
+we can use Hermite polynomials to approximate it. Recall:
+\[
+\text{He}_{n}=(-1)^{n}e^{x^{2}/2}\frac{d^{n}}{dx^{n}}(e^{-x^{2}/2})
+\]
+
+The first few look like:
+\begin{align*}
+\text{He}_{0} & =1\\
+\text{He}_{1} & =x-1\\
+\text{He}_{2} & =x^{2}-1\\
+\text{He}_{3} & =x^{3}-3x\\
+\text{He}_{4} & =x^{4}-6x^{2}+3\\
+ & \vdots
+\end{align*}
+
+We can show that:
+\[
+\text{He}_{n+1}(x)=x\text{He}_{n}(x)-n\text{He}_{n-1}(x)
+\]
+
+These polynomials are the orthogonal basis of $\mathcal{P}(x)$, the
+space of all polynomials in $x$; their orthogonality is under the
+inner-product of the space which is with respect to the Gaussian measure
+$\langle\cdot,\cdot\rangle_{\Phi}$, given as $\langle p,q\rangle_{\varphi}=\int p(x)q(x)\varphi(x)dx$
+where $\varphi(x)=\frac{e^{-x^{2}/2}}{\sqrt{2\pi}}.$ In other words,
+$\langle p,q\rangle_{\varphi}=\mathbb{E}_{Z\sim\mathcal{N}(0,1)}[p(Z)q(Z)]$.
+Then:
+\begin{align*}
+f(x) & =\sum_{n}\frac{1}{n!}\langle f(x),\text{He}_{n}(x)\rangle_{\varphi}\text{He}_{n}(x)
+\end{align*}
+
+Denote $\frac{1}{n!}\langle f(x),\text{He}_{n}(x)\rangle_{\varphi}=c_{n}(x)$
+
+First consider $\mu_{\phi}$:
+\begin{align*}
+\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}[\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})] & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[\mathbb{E}_{\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}[\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[\mathbb{E}_{\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}[\sum_{n}c_{n}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})\text{He}_{n}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[\sum_{n}c_{n}\mathbb{E}_{\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}[\text{He}_{n}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[\sum_{n}\langle\text{He}_{0},c_{n}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})\text{He}_{n}\rangle_{\varphi}]
+\end{align*}
+
+We want to expand the closed-form of $\mathcal{L}_{\sigma}$. Here
+if we Hermite-expand on the non-linear $\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})$
+then our Hermite polynomials would look like $\text{He}_{n}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})$
+and coefficients like $c_{n}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})$,
+which is not ideal for simplifying any further since we will be dealing
+with $\boldsymbol{x_{0}}+\sigma\boldsymbol{Z}$ which is not Gaussian
+unless $\boldsymbol{x_{0}}$ is Gaussian. So first condition on $\boldsymbol{x_{0}}$
+first and then expand. Consider the case $\phi$ is a component-wise
+non-linear function; then we can get around $\phi(\boldsymbol{y})=\omega(\Theta\boldsymbol{y}+\xi)$
+by building it row by row. Let $\theta_{j}$ be the $j^{\text{th}}$
+row of $\Theta$, and conditional on $\boldsymbol{x_{0}}$:
+\begin{align*}
+\phi_{j}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z}) & =\omega(\theta_{j}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})+\epsilon_{j})=\omega(\theta^{\top}_{j}\boldsymbol{x_{0}}+\sigma\theta^{\top}_{j}\boldsymbol{Z}+\epsilon_{j})\coloneqq\omega(M_{j}(\boldsymbol{x_{0}})+s_{j}\xi);\\
+\text{where} & \qquad\qquad\:s_{j}=\sigma\|\theta_{j}\|,\quad\xi=\frac{\theta^{\top}_{j}\boldsymbol{Z}}{\|\theta_{j}\|}\sim\mathcal{N}(0,1),\quad M_{j}(\boldsymbol{x_{0}})=\theta^{\top}_{j}\boldsymbol{x_{0}}+\epsilon_{j}
+\end{align*}
+
+Conditional on $\boldsymbol{x_{0}},$ $M_{j}(\boldsymbol{x_{0}})$
+is just a constant; and $s_{j}$ is also a constant. Then $\omega$
+really is a function of $\xi$; let $f(\xi):\xi\mapsto\omega(M_{j}(\boldsymbol{x_{0}})+s_{j}\xi)$.
+Now we Hermite-expand $f(\xi)$:
+\begin{align*}
+\omega(M_{j}(\boldsymbol{x_{0}})+s_{j}\xi) & =\sum_{n=0}c_{n}(M_{j}(\boldsymbol{x_{0}}),s_{j})\text{He}_{n}(\xi),\quad\quad\quad c_{n}(M_{j}(\boldsymbol{x_{0}}),s_{j})=\frac{1}{n!}\langle f(\xi),\text{He}_{n}(\xi)\rangle_{\varphi}=\mathbb{E}_{\xi\sim\mathcal{N}(0,1)}[f(\xi)\text{He}_{n}(\xi)]
+\end{align*}
+
+Note that $c_{n}(M_{j}(\boldsymbol{x_{0}}),s_{j})$ is a constant
+w.r.t $\xi$ since $\xi$ would be integrated out. Also that $\mathbb{E}_{\xi\sim\mathcal{N}(0,1)}[\text{He}_{i}(\xi)\text{He}_{j}(\xi)]=0$
+by orthogonality. Then by Tower property:
+\begin{align*}
+\mathbb{E}[\phi_{j}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})] & =\mathbb{E}_{\boldsymbol{x_{0}}\sim\boldsymbol{p_{0}}}[\mathbb{E}[\phi_{j}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})\mid\boldsymbol{x_{0}}]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim\boldsymbol{p_{0}}}[\mathbb{E}_{\xi\sim\mathcal{N}(0,1)}[\sum_{n=0}c_{n}(M_{j}(\boldsymbol{x_{0}}),s_{j})\text{He}_{n}(\xi)]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim\boldsymbol{p_{0}}}[\sum_{n=0}c_{n}(M_{j}(\boldsymbol{x_{0}}),s_{j})\mathbb{E}_{\xi\sim\mathcal{N}(0,1)}[\text{He}_{n}(\xi)\text{He}_{0}(\xi)]]\quad\quad(\text{since }\text{He}_{0}=1)\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim\boldsymbol{p_{0}}}[c_{0}(M_{j}(\boldsymbol{x_{0}}),s_{j})]
+\end{align*}
+
+Rewrite $c_{0}(M_{j}(\boldsymbol{x_{0}}),s_{j})\coloneqq g_{j}(\boldsymbol{x_{0}})$
+since $g_{j}$ varies with $\boldsymbol{x_{0}}$:
+\begin{align*}
+g_{j}(\boldsymbol{x_{0}}) & =\mathbb{E}_{\xi\sim\mathcal{N}(0,1)}[f(\xi)\text{He}_{0}(\xi)]\\
+ & =\mathbb{E}_{\xi\sim\mathcal{N}(0,1)}[\omega(M_{j}(\boldsymbol{x_{0}})+s_{j}\xi)]\\
+ & =\int\omega(M_{j}(\boldsymbol{x_{0}})+s_{j}\xi)\frac{e^{-\xi^{2}/2}}{\sqrt{2\pi}}d\xi
+\end{align*}
+
+Let $u=s_{j}\xi$, so $\xi=\frac{u}{s_{j}}$ and $d\xi=\frac{du}{s_{j}}$:
+\begin{align*}
+g_{j}(\boldsymbol{x_{0}}) & =\int\omega(M_{j}(\boldsymbol{x_{0}})+u)\frac{e^{-u^{2}/2s^{2}_{j}}}{s_{j}\sqrt{2\pi}}du\\
+\end{align*}
+
+This integral is the convolution of function $\omega$ and the Gaussian
+$\mathcal{N}(0,s^{2}_{j})$, evaluated at the local point $M_{j}(\boldsymbol{x_{0}})$,
+i.e.
+\begin{align*}
+g_{j}(\boldsymbol{x_{0}}) & =(\omega*\mathcal{N}_{s^{2}_{j}})(M_{j}(\boldsymbol{x_{0}}))
+\end{align*}
+
+The interpretation is that this is a function $\omega$ blurred by
+a Gaussian kernel of width $s_{j}$, then evaluated at the point $M_{j}(\boldsymbol{x_{0}})$.
+Now consider $\text{Cov}(\boldsymbol{x_{0}},\phi)_{ij}$ at row $i^{\text{th}}$
+and column $j^{\text{th}}$:
+\begin{align*}
+\text{Cov}(\boldsymbol{x_{0}},\phi)_{ij} & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})(\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z}))_{j}]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[\mathbb{E}_{\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})(\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z}))_{j}\mid\boldsymbol{x_{0}}]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})\mathbb{E}_{\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}[(\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z}))_{j}\mid\boldsymbol{x_{0}}]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})g_{j}(\boldsymbol{x_{0}})]
+\end{align*}
+
+Note that $g_{j}(\boldsymbol{x_{0}})=c_{0}(M_{j}(\boldsymbol{x_{0}}),s_{j})$
+where $M_{j}(\boldsymbol{x_{0}})=\Theta^{\top}_{j}\boldsymbol{x_{0}}+\epsilon_{j}$
+so really $g_{j}(\boldsymbol{x_{0}})$ only depends on $u_{j}\coloneqq\Theta^{\top}_{j}\boldsymbol{x_{0}}+\epsilon_{j}$,
+so rewrite $g_{j}(\boldsymbol{x_{0}})=\psi(\Theta^{\top}_{j}\boldsymbol{x_{0}}+\epsilon_{j})=\psi(u_{j})$
+where $\psi(u)=c_{0}(u,s_{j})$. Now by Tower property:
+\begin{align*}
+\text{Cov}(\boldsymbol{x_{0}},\phi)_{ij} & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})g_{j}(\boldsymbol{x_{0}})]\\
+ & =\mathbb{E}_{u_{j}}[\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})g_{j}(\boldsymbol{x_{0}})\mid u_{j}]]\\
+ & =\mathbb{E}_{u_{j}}[\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})g_{j}(\boldsymbol{x_{0}})\mid u_{j}]]\\
+ & =\mathbb{E}_{u_{j}}[g_{j}(u_{j})\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})\mid u_{j}]]
+\end{align*}
+
+Define $r_{i}(u_{j})=\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})\mid u_{j}]]$,
+which is really a regression coefficient of $\boldsymbol{x_{0}}$
+onto its own linear projection. All this do is turning a multi-dimensional
+integral $\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}$ into an 1-D
+integral $\mathbb{E}_{u_{j}}$ .
+
+Now consider $\boldsymbol{\Sigma}_{\phi}$; recall that $\omega$
+is component-wise so we're allowed to break $\phi$ down into its
+entries. 
+\begin{align*}
+\boldsymbol{\Sigma}_{\phi,ij} & =\text{Cov}(\phi_{i},\phi_{j})=\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{Z}}[\phi_{i}\phi_{j}]-\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{Z}}[\phi_{i}]\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{Z}}[\phi_{j}]
+\end{align*}
+
+Consider the first expectation term; by the Tower property:
+\begin{align*}
+\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{Z}}[\phi_{i}\phi_{j}] & =\mathbb{E}_{\boldsymbol{x_{0}}}[\mathbb{E}_{\boldsymbol{Z}}[\phi_{i}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})\phi_{j}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})\mid\boldsymbol{x_{0}}]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}}\big[\text{Cov}(\phi_{i},\phi_{j}\mid\boldsymbol{x_{0}})+\mathbb{E}_{\boldsymbol{Z}}[\phi_{j}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})\mid\boldsymbol{x_{0}}]\mathbb{E}_{\boldsymbol{Z}}[\phi_{j}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})\mid\boldsymbol{x_{0}}]\big]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}}[\text{Cov}(\phi_{i},\phi_{j}\mid\boldsymbol{x_{0}})]+\mathbb{E}_{\boldsymbol{x_{0}}}[g_{i}(\boldsymbol{x_{0}})g_{j}(\boldsymbol{x_{0}})]
+\end{align*}
+
+Now:
+\begin{align*}
+\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{Z}}[\phi_{i}]\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{Z}}[\phi_{j}] & =\mathbb{E}_{\boldsymbol{x_{0}}}[\mathbb{E}_{\boldsymbol{Z}}[\phi_{i}\mid\boldsymbol{x_{0}}]]\mathbb{E}_{\boldsymbol{x_{0}}}[\mathbb{E}_{\boldsymbol{Z}}[\phi_{i}\mid\boldsymbol{x_{0}}]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}}[g_{i}(\boldsymbol{x_{0}})]\mathbb{E}_{\boldsymbol{x_{0}}}[g_{j}(\boldsymbol{x_{0}})]
+\end{align*}
+
+So:
+\begin{align*}
+\boldsymbol{\Sigma}_{\phi,ij} & =\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{Z}}[\phi_{i}\phi_{j}]-\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{Z}}[\phi_{i}]\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{Z}}[\phi_{j}]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}}[\text{Cov}_{\boldsymbol{Z}}(\phi_{i},\phi_{j}\mid\boldsymbol{x_{0}})]+\mathbb{E}_{\boldsymbol{x_{0}}}[g_{i}(\boldsymbol{x_{0}})g_{j}(\boldsymbol{x_{0}})]-\mathbb{E}_{\boldsymbol{x_{0}}}[g_{i}(\boldsymbol{x_{0}})]\mathbb{E}_{\boldsymbol{x_{0}}}[g_{j}(\boldsymbol{x_{0}})]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}}[\text{Cov}_{\boldsymbol{Z}}(\phi_{i},\phi_{j}\mid\boldsymbol{x_{0}})]+\text{Cov}_{\boldsymbol{x_{0}}}(g_{i}(\boldsymbol{x_{0}}),g_{j}(\boldsymbol{x_{0}}))
+\end{align*}
+
+Consider the term $\mathbb{E}_{\boldsymbol{x_{0}}}[\text{Cov}(\phi_{i},\phi_{j}\mid\boldsymbol{x_{0}})]$:
+\begin{align*}
+\mathbb{E}_{\boldsymbol{x_{0}}}[\text{Cov}_{\boldsymbol{Z}}(\phi_{i},\phi_{j}\mid\boldsymbol{x_{0}})] & =\mathbb{E}_{\boldsymbol{x_{0}}}[\mathbb{E}_{\boldsymbol{Z}}[\phi_{i}\phi_{j}\mid\boldsymbol{x_{0}}]-\mathbb{E}_{\boldsymbol{Z}}[\phi_{i}\mid\boldsymbol{x_{0}}]\mathbb{E}_{\boldsymbol{Z}}[\phi_{j}\mid\boldsymbol{x_{0}}]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}}[\mathbb{E}_{\boldsymbol{Z}}[\phi_{i}\phi_{j}\mid\boldsymbol{x_{0}}]-c_{0}(M_{i}(\boldsymbol{x_{0}}),s_{i})c_{0}(M_{j}(\boldsymbol{x_{0}}),s_{j})]
+\end{align*}
+
+Recall Hermite-expansion of $\phi$ conditional on $\boldsymbol{x_{0}}$:
+\begin{align*}
+\phi_{i} & =\sum_{n=0}c_{n}(M_{i}(\boldsymbol{x_{0}}),s_{i})\text{He}_{n}(\xi_{i}),\quad\phi_{j}=\sum_{m=0}c_{m}(M_{j}(\boldsymbol{x_{0}}),s_{j})\text{He}_{m}(\xi_{j});\hspace*{\fill}
+\end{align*}
+
+So:
+\begin{align*}
+\mathbb{E}_{\boldsymbol{Z}}[\phi_{i}\phi_{j}\mid\boldsymbol{x_{0}}] & =\mathbb{E}_{\boldsymbol{Z}}\big[\sum_{n=0}c_{n}(M_{i}(\boldsymbol{x_{0}}),s_{i})\text{He}_{n}(\xi_{i})\sum_{m=0}c_{m}(M_{j}(\boldsymbol{x_{0}}),s_{j})\text{He}_{m}(\xi_{j})\big]\\
+ & =\sum_{n,m}c_{n}(M_{i}(\boldsymbol{x_{0}}),s_{i})c_{m}(M_{j}(\boldsymbol{x_{0}}),s_{j})\mathbb{E}\big[\text{He}_{n}(\xi_{i})\text{He}_{m}(\xi_{j})\big]
+\end{align*}
+
+Using the Mehler product identity for correlated Gaussian:
+\begin{align*}
+\mathbb{E}\big[\text{He}_{n}(\xi_{i})\text{He}_{m}(\xi_{j})\big] & =n!\rho^{n}_{ij}\delta_{nm}
+\end{align*}
+
+where $\rho_{ij}=\text{Corr}(\xi_{i},\xi_{j})=\frac{\theta^{\top}_{i}\theta_{j}}{\|\theta_{i}\|\|\theta_{j}\|}$
+and $\delta_{nm}$ is the Kronecker delta. So:
+\begin{align*}
+\mathbb{E}_{\boldsymbol{Z}}[\phi_{i}\phi_{j}\mid\boldsymbol{x_{0}}] & =\sum_{n}\sum_{m}n!c_{n}(M_{i}(\boldsymbol{x_{0}}),s_{i})c_{m}(M_{j}(\boldsymbol{x_{0}}),s_{j})\rho^{n}_{ij}\delta_{nm}\\
+ & =\sum_{n}n!\rho^{n}_{ij}c_{n}(M_{i}(\boldsymbol{x_{0}}),s_{i})\sum_{m}c_{m}(M_{j}(\boldsymbol{x_{0}}),s_{j})\delta_{nm}\\
+ & =\sum_{n}n!\rho^{n}_{ij}c_{n}(M_{i}(\boldsymbol{x_{0}}),s_{i})c_{n}(M_{j}(\boldsymbol{x_{0}}),s_{j})
+\end{align*}
+
+Therefore:
+\begin{align*}
+\mathbb{E}_{\boldsymbol{x_{0}}}[\text{Cov}_{\boldsymbol{Z}}(\phi_{i},\phi_{j}\mid\boldsymbol{x_{0}})] & =\mathbb{E}_{\boldsymbol{x_{0}}}[\sum_{n}n!\rho^{n}_{ij}c_{n}(M_{i}(\boldsymbol{x_{0}}),s_{i})c_{n}(M_{j}(\boldsymbol{x_{0}}),s_{j})-c_{0}(M_{i}(\boldsymbol{x_{0}}),s_{i})c_{0}(M_{j}(\boldsymbol{x_{0}}),s_{j})]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}}[\sum_{n\geq1}n!\rho^{n}_{ij}c_{n}(M_{i}(\boldsymbol{x_{0}}),s_{i})c_{n}(M_{j}(\boldsymbol{x_{0}}),s_{j})]
+\end{align*}
+
+So:
+\[
+\boldsymbol{\Sigma}_{\phi,ij}=\text{Cov}_{\boldsymbol{x_{0}}}(g_{i}(\boldsymbol{x_{0}}),g_{j}(\boldsymbol{x_{0}}))+\mathbb{E}_{\boldsymbol{x_{0}}}[\sum_{n\geq1}n!\rho^{n}_{ij}c_{n}(M_{i}(\boldsymbol{x_{0}}),s_{i})c_{n}(M_{j}(\boldsymbol{x_{0}}),s_{j})]
+\]
+
+To summarize:
+\[
+\mathcal{L}_{\sigma}=\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}-\text{Cov}(\boldsymbol{x_{0}},\phi)\boldsymbol{\Sigma}^{-1}_{\phi}\text{Cov}(\phi,\boldsymbol{x_{0}}))
+\]
+
+where the entries of $\boldsymbol{\Sigma}_{\phi}$ is defined as above
+and the entries of $\text{Cov}(\boldsymbol{x_{0}},\phi)$ is 
+\[
+\text{Cov}(\boldsymbol{x_{0}},\phi)_{ij}=\mathbb{E}_{u_{j}}[g_{j}(u_{j})\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})\mid u_{j}]]
+\]
+
+
+\section{Conditional Non-linear denoiser}
+
+In the conditional case, if we treat $(\boldsymbol{y},\boldsymbol{U})$
+as a single joint input vector where $\phi^{\boldsymbol{U}}(\boldsymbol{y},\boldsymbol{U})=\omega(\Theta\boldsymbol{y}+\Gamma\boldsymbol{U}+\epsilon)$
+is a random feature map then the loss has the same form as before
+except that:
+\begin{align*}
+\mu^{\boldsymbol{U}}_{\phi} & =\mathbb{E}[\phi^{\boldsymbol{U}}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z},\boldsymbol{U})]\\
+\boldsymbol{\Sigma}^{\boldsymbol{U}}_{\phi} & =\text{Cov}(\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z},\boldsymbol{U}))\\
+\text{Cov}(\boldsymbol{x_{0}},\phi^{\boldsymbol{U}}) & =\mathbb{E}[(\boldsymbol{x_{0}}-\mu_{\boldsymbol{p_{0}}})(\phi^{\boldsymbol{U}}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z},\boldsymbol{U})-\mu^{\boldsymbol{U}}_{\phi})^{\top}]
+\end{align*}
+
+and so:
+\[
+\mathcal{L}_{\sigma,\boldsymbol{U}}=\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}-\text{Cov}(\boldsymbol{x_{0}},\phi^{\boldsymbol{U}})(\boldsymbol{\Sigma}^{\boldsymbol{U}}_{\phi})^{-1}\text{Cov}(\phi^{\boldsymbol{U}},\boldsymbol{x_{0}}))
+\]
+
+We want to expand this more. Carrying over from the unconditional
+case, let $\theta_{j}$ be the $j^{\text{th}}$ row of $\Theta$,
+$\gamma_{j}$ be the $j^{\text{th}}$ row of $\Gamma$, and conditional
+on $\boldsymbol{x_{0}}$:
+\begin{align*}
+\phi_{j}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z}) & =\omega(\theta_{j}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})+\gamma_{j}\boldsymbol{U}+\epsilon_{j})=\omega(\theta^{\top}_{j}\boldsymbol{x_{0}}+\sigma\theta^{\top}_{j}\boldsymbol{Z}+\gamma^{\top}_{j}\boldsymbol{U}+\epsilon_{j})\coloneqq\omega(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})+s_{j}\xi);\\
+\text{where} & \qquad\qquad\:s_{j}=\sigma\|\theta_{j}\|,\quad\xi=\frac{\theta^{\top}_{j}\boldsymbol{Z}}{\|\theta_{j}\|}\sim\mathcal{N}(0,1),\quad M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})=\theta^{\top}_{j}\boldsymbol{x_{0}}+\gamma_{j}\boldsymbol{U}+\epsilon_{j}
+\end{align*}
+
+We're given $\boldsymbol{U}$ and conditional on $\boldsymbol{x_{0}}$,
+$\omega$ really is a function of $\xi$; let $f(\xi):\xi\mapsto\omega(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})+s_{j}\xi)$.
+Hermite-expand $f(\xi)$:
+\begin{align*}
+\omega(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})+s_{j}\xi) & =\sum_{n=0}c_{n}(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}),s_{j})\text{He}_{n}(\xi),\quad\quad\quad c_{n}(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}),s_{j})=\frac{1}{n!}\langle f(\xi),\text{He}_{n}(\xi)\rangle_{\varphi}=\mathbb{E}_{\xi\sim\mathcal{N}(0,1)}[f(\xi)\text{He}_{n}(\xi)]
+\end{align*}
+
+Note that $c_{n}(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}),s_{j})$
+is a constant w.r.t $\xi$ since $\xi$ would be integrated out. Also
+that $\mathbb{E}_{\xi\sim\mathcal{N}(0,1)}[\text{He}_{i}(\xi)\text{He}_{j}(\xi)]=0$
+by orthogonality. Then by Tower property:
+\begin{align*}
+\mathbb{E}[\phi^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z},\boldsymbol{U})] & =\mathbb{E}_{\boldsymbol{x_{0}}\sim\boldsymbol{p_{0}},\boldsymbol{U}}[\mathbb{E}_{\boldsymbol{Z}}[\phi^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z},\boldsymbol{U})\mid\boldsymbol{x_{0}},\boldsymbol{U}]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim\boldsymbol{p_{0}},\boldsymbol{U}}[\mathbb{E}_{\xi\sim\mathcal{N}(0,1)}[\sum_{n=0}c_{n}(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}),s_{j})\text{He}_{n}(\xi)]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim\boldsymbol{p_{0}},\boldsymbol{U}}[\sum_{n=0}c_{n}(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}),s_{j})\mathbb{E}_{\xi\sim\mathcal{N}(0,1)}[\text{He}_{n}(\xi)\text{He}_{0}(\xi)]]\quad\quad(\text{since }\text{He}_{0}=1)\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim\boldsymbol{p_{0}},\boldsymbol{U}}[c_{0}(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}),s_{j})]
+\end{align*}
+
+Rewrite $c_{0}(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}),s_{j})\coloneqq g^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})$
+since $g^{\boldsymbol{U}}_{j}$ varies with $\boldsymbol{x_{0}}$
+and $\boldsymbol{U}$ was given:
+\begin{align*}
+g^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}) & =\mathbb{E}_{\xi\sim\mathcal{N}(0,1)}[f(\xi)\text{He}_{0}(\xi)\mid\boldsymbol{x_{0}},\boldsymbol{U}]\\
+ & =\mathbb{E}_{\xi\sim\mathcal{N}(0,1)}[\omega(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})+s_{j}\xi)]\\
+ & =\int\omega(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})+s_{j}\xi)\frac{e^{-\xi^{2}/2}}{\sqrt{2\pi}}d\xi
+\end{align*}
+
+Let $u=s_{j}\xi$, so $\xi=\frac{u}{s_{j}}$ and $d\xi=\frac{du}{s_{j}}$:
+\begin{align*}
+g^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}) & =\int\omega(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})+u)\frac{e^{-u^{2}/2s^{2}_{j}}}{s_{j}\sqrt{2\pi}}du\\
+\end{align*}
+
+This integral is the convolution of function $\omega$ and the Gaussian
+$\mathcal{N}(0,s^{2}_{j})$, evaluated at the local point $M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})$,
+i.e.
+\begin{align*}
+g^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}) & =(\omega*\mathcal{N}_{s^{2}_{j}})(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}))
+\end{align*}
+
+And so it follows that: 
+\begin{equation}
+\boldsymbol{\Sigma}^{\boldsymbol{U}}_{\phi,ij}=\text{Cov}_{\boldsymbol{x_{0}},\boldsymbol{U}}(g^{\boldsymbol{U}}_{i}(\boldsymbol{x_{0}}),g^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}))+\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{U}}[\sum_{n\geq1}n!\rho^{n}_{ij}c_{n}(M^{\boldsymbol{U}}_{i}(\boldsymbol{x_{0}}),s_{i})c_{n}(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}),s_{j})]\label{eq:gen-var-phi}
+\end{equation}
+
+Now consider $\text{Cov}(\boldsymbol{x_{0}},\phi^{\boldsymbol{U}})_{ij}$
+at row $i^{\text{th}}$ and column $j^{\text{th}}$:
+\begin{align*}
+\text{Cov}(\boldsymbol{x_{0}},\phi^{\boldsymbol{U}})_{ij} & =\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{Z},\boldsymbol{U}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})(\phi^{\boldsymbol{U}}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z}))_{j}]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{U}}[\mathbb{E}_{\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})(\phi^{\boldsymbol{U}}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z},\boldsymbol{U}))_{j}\mid\boldsymbol{x_{0}},\boldsymbol{U}]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{U}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})\mathbb{E}_{\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}[(\phi^{\boldsymbol{U}}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z},\boldsymbol{U}))_{j}\mid\boldsymbol{x_{0}},\boldsymbol{U}]]\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{U}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})g^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})]
+\end{align*}
+
+Note that $g^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})=c_{0}(M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}}),s_{j})$
+where $M^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})=\theta^{\top}_{j}\boldsymbol{x_{0}}+\gamma^{\top}_{j}\boldsymbol{U}+\epsilon_{j}$
+so really $g^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})$ only depends
+on $h_{j}\coloneqq\theta^{\top}_{j}\boldsymbol{x_{0}}+\gamma^{\top}_{j}\boldsymbol{U}+\epsilon_{j}$,
+so rewrite $g^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})=\psi(\theta^{\top}_{j}\boldsymbol{x_{0}}+\gamma^{\top}_{j}\boldsymbol{U}+\epsilon_{j})=\psi(h_{j})$
+where $\psi(h)=c_{0}(h,s_{j})$. Now by Tower property:
+\begin{align*}
+\text{Cov}(\boldsymbol{x_{0}},\phi^{\boldsymbol{U}})_{ij} & =\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{U}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})g^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})]\\
+ & =\mathbb{E}_{h_{j}}[\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{U}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})g^{\boldsymbol{U}}_{j}(\boldsymbol{x_{0}})\mid h_{j}]]\\
+ & =\mathbb{E}_{h_{j}}[g^{\boldsymbol{U}}_{j}(h_{j})\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{U}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})\mid h_{j}]]
+\end{align*}
+
+Define $r_{i}(h_{j})=\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{U}}[(\boldsymbol{x}_{\boldsymbol{0},i}-\mu_{\boldsymbol{p_{0}},i})\mid h_{j}]$,
+which is really a regression coefficient of $[\boldsymbol{x_{0}},\boldsymbol{U}]$
+onto its own linear projection $h_{j}=[\theta_{j},\gamma_{j}]^{\top}[\boldsymbol{x_{0}},\boldsymbol{U}]$
+plus noise. All this do is turning a multi-dimensional integral $\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{U}}$
+into an 1-D integral $\mathbb{E}_{h_{j}}$ .
+
+$\mathcal{L}_{\sigma,\boldsymbol{U}}$ capture information of how
+$\boldsymbol{x_{0}}$ relates to $\boldsymbol{U}$ in a non-linear
+way.
+
+Note: Recall that what follows is only valid when $\omega$ is component-wise,
+so the formulas we derived would not apply to $\omega$ being a function
+like softmax. In such case, $\mu^{\boldsymbol{U}}_{\phi}=\mathbb{E}[\phi^{\boldsymbol{U}}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z},\boldsymbol{U})]$,
+$\boldsymbol{\Sigma}^{\boldsymbol{U}}_{\phi}=\text{Cov}(\phi(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z},\boldsymbol{U}))$
+and $\text{Cov}(\boldsymbol{x_{0}},\phi^{\boldsymbol{U}})=\mathbb{E}[(\boldsymbol{x_{0}}-\mu_{\boldsymbol{p_{0}}})(\phi^{\boldsymbol{U}}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z},\boldsymbol{U})-\mu^{\boldsymbol{U}}_{\phi})^{\top}]$
+would have to be left in these forms and can't be broken down any
+further, and remain integrals over all of $\boldsymbol{x_{0}}\sim\boldsymbol{p_{0}},\boldsymbol{Z},\boldsymbol{U}$.
+Though in the case of softmax, if somehow the denominator can be asymptotically
+approximated as some quantity that is independent of each of the entries
+that sum to it, e.g. by LLN, then $\omega$ can still be considered
+component-wise and our derivations apply.
+\begin{align*}
+I(X;U) & =\frac{1}{2}\int^{\infty}_{0}\frac{dt}{t^{2}}(\text{MMSE }[X\mid Y_{t}]-\text{MMSE }[X\mid Y_{t},U])\\
+ & \approx\frac{1}{2}\int^{\infty}_{0}\frac{d\sigma}{\sigma^{3}}(\mathcal{L}_{\sigma}-\mathcal{L}_{\sigma,\boldsymbol{U}})\\
+ & \approx\frac{1}{2}\int^{\infty}_{0}\frac{d\sigma}{\sigma^{3}}\text{Tr}(\text{Cov}(\boldsymbol{x_{0}},\phi^{\boldsymbol{U}})(\boldsymbol{\Sigma}^{\boldsymbol{U}}_{\phi})^{-1}\text{Cov}(\phi^{\boldsymbol{U}},\boldsymbol{x_{0}})-\text{Cov}(\boldsymbol{x_{0}},\phi)\boldsymbol{\Sigma}^{-1}_{\phi}\text{Cov}(\phi,\boldsymbol{x_{0}}))
+\end{align*}
+
+Note: $\text{Cov}(\boldsymbol{x_{0}},\phi)\boldsymbol{\Sigma}^{-1}_{\phi}\text{Cov}(\phi,\boldsymbol{x_{0}})$
+is the explained variance of the best possible linear regression of
+$\boldsymbol{x_{0}}$ onto $\phi$. 
+
+so $\text{Cov}(\boldsymbol{x_{0}},\phi^{\boldsymbol{U}})(\boldsymbol{\Sigma}^{\boldsymbol{U}}_{\phi})^{-1}\text{Cov}(\phi^{\boldsymbol{U}},\boldsymbol{x_{0}})\geq\text{Cov}(\boldsymbol{x_{0}},\phi)\boldsymbol{\Sigma}^{-1}_{\phi}\text{Cov}(\phi,\boldsymbol{x_{0}})$
+if $\text{span}(\phi)\subseteq\text{span}(\phi^{\boldsymbol{U}})$.
+Otherwise, the integrand is not nonnegative.
+
+\section{Jointly Gaussian $(\boldsymbol{x_{0}},\boldsymbol{U})$}
+
+In the case of $(\boldsymbol{x_{0}},\boldsymbol{U})$ jointly Gaussian,
+we can simplify the expression even more as this buys us Stein's lemma.
+Now $l_{j}\coloneqq\theta^{\top}_{j}\boldsymbol{x_{0}}+\gamma^{\top}_{j}\boldsymbol{U}+\epsilon_{j}+s_{j}\xi$
+is Gaussian, and equivalently $l_{j}=[\theta_{j},\gamma_{j}]^{\top}[\boldsymbol{x_{0}},\boldsymbol{U}]+\epsilon_{j}+s_{j}\xi$.
+Let the co-variance between $\boldsymbol{x_{0}}$ and $\boldsymbol{U}$
+be $C_{\boldsymbol{xU}}$. Then $l_{j}$ has mean and variance:
+\begin{align*}
+\tilde{m_{j}} & =\theta_{j}\mu_{\boldsymbol{x_{0}}}+\gamma_{j}\mu_{\boldsymbol{U}}\\
+\tilde{S^{2}_{j}} & =\text{Var}([\theta_{j},\gamma_{j}]^{\top}[\boldsymbol{x_{0}},\boldsymbol{U}])+\text{Var}(s_{j}\xi)\\
+ & =[\theta_{j},\gamma_{j}]^{\top}\begin{bmatrix}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}} & C_{\boldsymbol{xU}}\\
+C_{\boldsymbol{Ux}} & \boldsymbol{\Sigma}_{\boldsymbol{U}}
+\end{bmatrix}[\theta_{j},\gamma_{j}]+\sigma^{2}\|\theta_{j}\|\\
+ & =\theta^{\top}_{j}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\theta_{j}+2\theta^{\top}_{j}C_{\boldsymbol{xU}}\gamma_{j}+\gamma^{\top}_{j}\boldsymbol{\Sigma}_{\boldsymbol{U}}\gamma_{j}+\sigma^{2}\|\theta_{j}\|
+\end{align*}
+
+Standardizing $l_{j}$ we get $l_{j}=\tilde{m_{j}}+\tilde{S_{j}}t$
+where $t\sim\mathcal{N}(0,1)$. Now by Stein's lemma applying to $(\boldsymbol{x_{0}},l_{j})$
+jointly Gaussian:
+\begin{align*}
+\text{Cov}(\boldsymbol{x_{0}},\phi^{\boldsymbol{U}})_{:j} & =\mathbb{E}_{\boldsymbol{x_{0}},\boldsymbol{Z},\boldsymbol{U}}[(\boldsymbol{x}_{\boldsymbol{0}}-\mu_{\boldsymbol{p_{0}}})(\omega(l_{j})]\\
+ & =\text{Cov}(\boldsymbol{x_{0}},l_{j})\mathbb{E}[\omega'(l_{j})]\\
+ & =(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\theta_{j}+C_{\boldsymbol{xU}}\gamma_{j})\mathbb{E}[\omega'(l_{j})]
+\end{align*}
+
+Rewrite $\omega(l_{j})=\omega(\tilde{m_{j}}+\tilde{S_{j}}t)\eqqcolon g(t)$,
+so by Stein's lemma again:
+\begin{align*}
+\mathbb{E}_{t\sim\mathcal{N}(0,1)}[g'(t)] & =\mathbb{E}_{t\sim\mathcal{N}(0,1)}[t\cdot g(t)]
+\end{align*}
+
+So:
+\begin{align*}
+\mathbb{E}_{t\sim\mathcal{N}(0,1)}[\tilde{S_{j}}\omega'(\tilde{m_{j}}+\tilde{S_{j}}t)] & =\mathbb{E}_{t\sim\mathcal{N}(0,1)}[\text{He}_{1}\cdot\omega(\tilde{m_{j}}+\tilde{S_{j}}t)]\\
+\tilde{S_{j}}\mathbb{E}_{l_{j}\sim\mathcal{N}(\tilde{m_{j}},\tilde{S^{2}_{j}})}[\omega'(l_{j})] & =c_{1}(\tilde{m_{j}},\tilde{S_{j}})
+\end{align*}
+
+Therefore:
+\[
+\mathbb{E}_{l_{j}\sim\mathcal{N}(\tilde{m_{j}},\tilde{S^{2}_{j}})}[\omega'(l_{j})]=\frac{c_{1}(\tilde{m_{j}},\tilde{S_{j}})}{\tilde{S_{j}}}
+\]
+
+and:
+\[
+\text{Cov}(\boldsymbol{x_{0}},\phi^{\boldsymbol{U}})_{:j}=(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\theta_{j}+C_{\boldsymbol{xU}}\gamma_{j})\alpha_{j}\hspace*{3em}\text{where }\alpha_{j}=\frac{c_{1}(\tilde{m_{j}},\tilde{S_{j}})}{\tilde{S_{j}}}
+\]
+
+Meanwhile, we consider $\boldsymbol{\Sigma}^{\boldsymbol{U}}_{\phi,ij}$;
+first standardizing each of $l_{i}$ and $l_{j}$ is:
+\[
+t_{i}=\frac{l_{i}-\tilde{m_{i}}}{\tilde{S_{i}}}\sim\mathcal{N}(0,1)\hspace*{5em}t_{j}=\frac{l_{j}-\tilde{m_{j}}}{\tilde{S_{j}}}\sim\mathcal{N}(0,1)
+\]
+
+and their correlation is:
+\[
+\tilde{r}_{ij}=\text{Corr}(t_{i},t_{j})=\frac{\theta^{\top}_{i}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\theta_{j}+\theta^{\top}_{i}C_{\boldsymbol{xU}}\gamma_{j}+\gamma^{\top}_{i}C_{\boldsymbol{Ux}}\theta_{j}+\gamma^{\top}_{i}\boldsymbol{\Sigma}_{\boldsymbol{U}}\gamma_{j}+\sigma^{2}\theta^{\top}_{i}\theta_{j}}{\tilde{S_{i}}\tilde{S_{j}}}
+\]
+
+Hermite-expansion:
+\begin{align*}
+\omega(l_{i})=\omega(\tilde{m_{i}}+\tilde{S_{i}}t_{i}) & =\sum_{n=0}c_{n}(\tilde{m_{i}},\tilde{S_{i}})\text{He}_{n}(t_{i})\\
+\omega(l_{j})=\omega(\tilde{m_{j}}+\tilde{S_{j}}t_{j}) & =\sum_{m=0}c_{m}(\tilde{m_{j}},\tilde{S_{j}})\text{He}_{m}(t_{j})
+\end{align*}
+
+Then:
+\begin{align*}
+\mathbb{E}[\phi^{\boldsymbol{U}}_{i}\phi^{\boldsymbol{U}}_{j}] & =\sum_{n,m}c_{n}(\tilde{m_{i}},\tilde{S_{i}})\text{He}_{n}(t_{i})c_{m}(\tilde{m_{j}},\tilde{S_{j}})\text{He}_{m}(t_{j})\mathbb{E}\big[\text{He}_{n}(t_{i})\text{He}_{m}(t_{j})\big]\\
+ & =\sum_{n}n!\tilde{r}^{n}_{ij}c_{n}(\tilde{m_{i}},\tilde{S_{i}})c_{n}(\tilde{m_{j}},\tilde{S_{j}})
+\end{align*}
+
+And so:
+\begin{align*}
+\boldsymbol{\Sigma}^{\boldsymbol{U}}_{\phi,ij} & =\mathbb{E}[\phi^{\boldsymbol{U}}_{i}\phi^{\boldsymbol{U}}_{j}]-\mathbb{E}[\phi^{\boldsymbol{U}}_{i}]\mathbb{E}[\phi^{\boldsymbol{U}}_{j}]\\
+ & =\sum_{n}n!\tilde{r}^{n}_{ij}c_{n}(\tilde{m_{i}},\tilde{S_{i}})c_{n}(\tilde{m_{j}},\tilde{S_{j}})-c_{0}(\tilde{m_{i}},\tilde{S_{i}})c_{0}(\tilde{m_{j}},\tilde{S_{j}})\\
+ & =\sum_{n\geq1}n!\tilde{r}^{n}_{ij}c_{n}(\tilde{m_{i}},\tilde{S_{i}})c_{n}(\tilde{m_{j}},\tilde{S_{j}})
+\end{align*}
+
+This only has 1 term instead of 2 like in the general case, since
+$l_{i}$ and $l_{j}$ are both Gaussians, so we can write a closed-form
+for their covariance instead of having to decompose it out like in
+(\ref{eq:gen-var-phi}).
+
+So writing $\boldsymbol{A}_{\boldsymbol{U}}=(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\Theta^{\top}+C_{\boldsymbol{xU}}\Gamma^{\top})\text{diag}(\alpha)$,
+then:
+\[
+\mathcal{L}_{\sigma,\boldsymbol{U}}=\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})-\text{Tr}(\boldsymbol{A}_{\boldsymbol{U}}(\boldsymbol{\Sigma}^{\boldsymbol{U}}_{\phi})^{-1}\boldsymbol{A}^{\top}_{\boldsymbol{U}})
+\]
+
+Similarly for the unconditional case:
+\begin{align*}
+m_{j} & =\theta_{j}\mu_{\boldsymbol{x_{0}}}\\
+S^{2}_{j} & =\theta^{\top}_{j}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\theta_{j}+\sigma^{2}\|\theta_{j}\|
+\end{align*}
+
+and:
+\[
+\text{Cov}(\boldsymbol{x_{0}},\phi)_{:j}=(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\theta_{j})\alpha^{0}_{j}\hspace*{3em}\text{where }\alpha^{0}_{j}=\frac{c_{1}(m_{j},S_{j})}{S_{j}}
+\]
+\[
+\boldsymbol{\Sigma}_{\phi,ij}=\sum_{n\geq1}n!r^{n}_{ij}c_{n}(m_{i},S_{i})c_{n}(m_{j},S_{j})
+\]
+
+And so:
+\begin{align*}
+\mathcal{L}_{\sigma}-\mathcal{L}_{\sigma,\boldsymbol{U}} & =\text{Tr}(\boldsymbol{A}_{\boldsymbol{U}}(\boldsymbol{\Sigma}^{\boldsymbol{U}}_{\phi})^{-1}\boldsymbol{A}^{\top}_{\boldsymbol{U}})-\text{Tr}(\boldsymbol{A}(\boldsymbol{\Sigma}_{\phi})^{-1}\boldsymbol{A}^{\top})
+\end{align*}
+
+where $\boldsymbol{A}=\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\Theta^{\top}\text{diag}(\alpha^{0})$ 
+\end{document}
