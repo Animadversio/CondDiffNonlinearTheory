@@ -306,10 +306,12 @@ def main():
         'linear_wiener',
         'linear_wiener_cond',
         'rf_uncond_empirical_cf',
-        'rf_uncond_empirical_dir',
+        'rf_uncond_empirical_dir',     # W* on train, eval on test images + fresh noise
+        'rf_uncond_empirical_train',   # W* on train, eval on SAME train images + fresh noise (like oracle bayes)
         'rf_uncond_theory',
         'rf_cond_empirical_cf',
         'rf_cond_empirical_dir',
+        'rf_cond_empirical_train',
         'rf_cond_theory',
     ]}
 
@@ -346,19 +348,28 @@ def main():
         Cov_u, Sig_u, mu_phi_u = accum_u.covariances(LAM)
         Cov_c, Sig_c, mu_phi_c = accum_c.covariances(LAM)
 
-        # --- Test features (one fresh draw) ---
+        # --- Test features: held-out test images + fresh noise ---
         Z_test = torch.randn_like(x0_test) * sigma
-        Y_test = x0_test + Z_test
-        Phi_test_u = F.relu(Y_test @ Theta.T)
-        Phi_test_c = F.relu(Y_test @ Theta.T + U_test @ Gamma.T)
-        del Z_test, Y_test
+        Phi_test_u = F.relu((x0_test + Z_test) @ Theta.T)
+        Phi_test_c = F.relu((x0_test + Z_test) @ Theta.T + U_test @ Gamma.T)
+        del Z_test
+
+        # --- Train features: SAME train images + fresh noise (like oracle bayes) ---
+        Z_fresh = torch.randn_like(x0_train) * sigma
+        Phi_train_fresh_u = F.relu((x0_train + Z_fresh) @ Theta.T)
+        Phi_train_fresh_c = F.relu((x0_train + Z_fresh) @ Theta.T + U_train @ Gamma.T)
+        del Z_fresh
 
         # --- Uncond empirical CF ---
         res['rf_uncond_empirical_cf'].append(mmse_from_covs(trace_p0, Cov_u, Sig_u))
 
-        # --- Uncond empirical direct ---
+        # --- Uncond empirical direct (test images) ---
         res['rf_uncond_empirical_dir'].append(
             mmse_empirical_direct(Cov_u, Sig_u, mu_phi_u, mu_x0, Phi_test_u, x0_test))
+
+        # --- Uncond empirical train+fresh (same x0 pool, fresh noise — like oracle bayes) ---
+        res['rf_uncond_empirical_train'].append(
+            mmse_empirical_direct(Cov_u, Sig_u, mu_phi_u, mu_x0, Phi_train_fresh_u, x0_train))
 
         # --- Uncond theory ---
         res['rf_uncond_theory'].append(
@@ -367,15 +378,19 @@ def main():
         # --- Cond empirical CF ---
         res['rf_cond_empirical_cf'].append(mmse_from_covs(trace_p0, Cov_c, Sig_c))
 
-        # --- Cond empirical direct ---
+        # --- Cond empirical direct (test images) ---
         res['rf_cond_empirical_dir'].append(
             mmse_empirical_direct(Cov_c, Sig_c, mu_phi_c, mu_x0, Phi_test_c, x0_test))
+
+        # --- Cond empirical train+fresh (same x0 pool, fresh noise) ---
+        res['rf_cond_empirical_train'].append(
+            mmse_empirical_direct(Cov_c, Sig_c, mu_phi_c, mu_x0, Phi_train_fresh_c, x0_train))
 
         # --- Cond theory ---
         res['rf_cond_theory'].append(
             mmse_theory_cond(Theta, Gamma, x0_train, U_train, trace_p0, sigma, LAM))
 
-        del Phi_test_u, Phi_test_c, Cov_u, Sig_u, Cov_c, Sig_c
+        del Phi_test_u, Phi_test_c, Phi_train_fresh_u, Phi_train_fresh_c, Cov_u, Sig_u, Cov_c, Sig_c
 
     # --- Save ---
     os.makedirs('tables', exist_ok=True)
@@ -393,19 +408,21 @@ def main():
     sg = sigma_grid
 
     ax = axes[0]
-    ax.plot(sg, res['linear_wiener'],           'k-',  lw=2,   label='Linear Wiener (analytic)')
-    ax.plot(sg, res['rf_uncond_empirical_cf'],  'b-',  lw=2,   label='RF uncond: Empirical CF')
-    ax.plot(sg, res['rf_uncond_empirical_dir'], 'b--', lw=1.5, label='RF uncond: Empirical direct (test)')
-    ax.plot(sg, res['rf_uncond_theory'],        'b:',  lw=2,   label='RF uncond: Theory (Hermite n≤2)')
+    ax.plot(sg, res['linear_wiener'],                'k-',  lw=2,   label='Linear Wiener (analytic)')
+    ax.plot(sg, res['rf_uncond_empirical_cf'],       'b-',  lw=2,   label='RF uncond: Empirical CF (in-sample)')
+    ax.plot(sg, res['rf_uncond_empirical_train'],    'b--', lw=1.5, label='RF uncond: Train x0 + fresh Z (like oracle)')
+    ax.plot(sg, res['rf_uncond_empirical_dir'],      'b:',  lw=1.5, label='RF uncond: Test images + fresh Z')
+    ax.plot(sg, res['rf_uncond_theory'],             'b-.', lw=2,   label='RF uncond: Theory (Hermite n≤2)')
     ax.set_xscale('log'); ax.set_xlabel('sigma'); ax.set_ylabel('MSE loss')
     ax.set_title(f'Unconditional: L_sigma  (k={K}, d={x0_train.shape[1]})')
     ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
 
     ax = axes[1]
-    ax.plot(sg, res['linear_wiener_cond'],     'k-',  lw=2,   label='Cond. Linear Wiener (class eigvals)')
-    ax.plot(sg, res['rf_cond_empirical_cf'],   'r-',  lw=2,   label='RF cond: Empirical CF')
-    ax.plot(sg, res['rf_cond_empirical_dir'],  'r--', lw=1.5, label='RF cond: Empirical direct (test)')
-    ax.plot(sg, res['rf_cond_theory'],         'r:',  lw=2,   label='RF cond: Theory (Hermite n≤2)')
+    ax.plot(sg, res['linear_wiener_cond'],           'k-',  lw=2,   label='Cond. Linear Wiener (class eigvals)')
+    ax.plot(sg, res['rf_cond_empirical_cf'],         'r-',  lw=2,   label='RF cond: Empirical CF (in-sample)')
+    ax.plot(sg, res['rf_cond_empirical_train'],      'r--', lw=1.5, label='RF cond: Train x0 + fresh Z (like oracle)')
+    ax.plot(sg, res['rf_cond_empirical_dir'],        'r:',  lw=1.5, label='RF cond: Test images + fresh Z')
+    ax.plot(sg, res['rf_cond_theory'],               'r-.', lw=2,   label='RF cond: Theory (Hermite n≤2)')
     ax.set_xscale('log'); ax.set_xlabel('sigma'); ax.set_ylabel('MSE loss')
     ax.set_title(f'Conditional: L_sigma,U  (k={K}, d={x0_train.shape[1]})')
     ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
