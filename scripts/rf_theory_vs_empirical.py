@@ -44,7 +44,7 @@ N_NOISE   = 5       # noise draws per image for empirical estimate
 LAM       = 1e-4    # ridge regularization
 N_SIGMA   = 25
 SIGMA_MIN = 0.01
-SIGMA_MAX = 50.0
+SIGMA_MAX = 100.0
 N_CLASSES = 10
 
 # ---------------------------------------------------------------------------
