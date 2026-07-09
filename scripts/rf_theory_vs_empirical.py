@@ -248,6 +248,123 @@ def mmse_theory_cond(Theta, Gamma, eigvals, eigvecs, Sigma_U, C_xU, mu_x0, mu_U,
 
 
 # ---------------------------------------------------------------------------
+# Exact theory using data distribution (no Gaussian p_0 assumption)
+# ---------------------------------------------------------------------------
+# Key insight from newfile2.tex: the E_{x0,U}[...] integrals can be computed
+# empirically from the actual data distribution. Only the E_Z[...] (noise)
+# integral needs Hermite expansion — and Z IS Gaussian so that's exact.
+#
+# Sigma_phi = Cov_{x0}(g) + rho * (C1^T C1 / N) + 2*rho^2 * (C2^T C2 / N)
+# where rho_ij = sigma^2 theta_i theta_j / (s_i s_j) is the NOISE-ONLY correlation.
+# The data variation is captured exactly in Cov_{x0}(g), no Gaussian approx needed.
+
+@torch.no_grad()
+def mmse_theory_data_uncond(Theta, x0_train, trace_p0, sigma, lam):
+    """
+    Exact theory for uncond RF: uses actual data distribution for x0 expectations.
+    No Gaussian assumption on p0. Only Hermite expansion is for noise Z (exact).
+
+    g_j(x0) = E_Z[relu(theta_j x0 + s_j xi)] = M_j Phi(z_j) + s_j phi(z_j)
+    Cov(x0, phi)  = X0_c^T G_c / N            (empirical, exact)
+    Sigma_phi = Cov_{x0}(G) + rho * (C1^T C1 / N) + 2*rho^2 * (C2^T C2 / N)
+    """
+    N, d = x0_train.shape
+    k = Theta.shape[0]
+    dev = x0_train.device
+
+    mu_x0 = x0_train.mean(0)
+    X0_c  = x0_train - mu_x0                   # (N, d)
+
+    # Pre-activation mean for each sample: M_j^(n) = theta_j x0^(n)
+    M = x0_train @ Theta.T                      # (N, k)
+
+    # Noise std per feature: s_j = sigma * ||theta_j||
+    s = sigma * (Theta * Theta).sum(1).sqrt()   # (k,)
+    z = M / s.unsqueeze(0)                      # (N, k)
+
+    z_np  = z.cpu().numpy()
+    Phi_z = torch.tensor(scipy_norm.cdf(z_np), device=dev, dtype=x0_train.dtype)  # (N,k)
+    phi_z = torch.tensor(scipy_norm.pdf(z_np), device=dev, dtype=x0_train.dtype)  # (N,k)
+
+    # g_j^(n) = c0 = M_j Phi(z) + s_j phi(z)   (N, k)
+    G = M * Phi_z + s.unsqueeze(0) * phi_z     # (N, k)
+
+    # Hermite coefficients (per sample per feature)
+    C1 = s.unsqueeze(0) * Phi_z                # (N, k)   c1 = s Phi(z)
+    C2 = s.unsqueeze(0) * phi_z / 2.0          # (N, k)   c2 = s phi(z)/2
+
+    # Cov(x0, phi) = X0_c^T G_c / N
+    G_c = G - G.mean(0)                        # (N, k)
+    Cov_x0_phi = X0_c.T @ G_c / N             # (d, k)
+
+    # Data part of Sigma_phi: Cov_{x0}(G)
+    Sig_data = G_c.T @ G_c / N                 # (k, k)
+
+    # Noise-only correlation rho_ij = sigma^2 theta_i theta_j / (s_i s_j)
+    ThetaThetaT = Theta @ Theta.T              # (k, k)
+    rho = sigma**2 * ThetaThetaT / (s.unsqueeze(1) * s.unsqueeze(0))  # (k, k)
+    rho = rho.clamp(-1+1e-7, 1-1e-7)
+
+    # Noise part: Hermite n=1,2 terms
+    EC1C1 = C1.T @ C1 / N                     # (k, k)   E[c1_i c1_j]
+    EC2C2 = C2.T @ C2 / N                     # (k, k)   E[c2_i c2_j]
+    Sig_noise = rho * EC1C1 + 2.0 * rho**2 * EC2C2
+
+    Sigma_phi = Sig_data + Sig_noise + lam * torch.eye(k, device=dev, dtype=x0_train.dtype)
+
+    A         = torch.linalg.solve(Sigma_phi, Cov_x0_phi.T)   # (k, d)
+    explained = float(torch.trace(Cov_x0_phi @ A))
+    return max(0.0, trace_p0 - explained)
+
+
+@torch.no_grad()
+def mmse_theory_data_cond(Theta, Gamma, x0_train, U_train, trace_p0, sigma, lam):
+    """
+    Exact theory for conditional RF: phi^U_j = relu(theta_j x0 + gamma_j U + s_j xi).
+    Uses actual (x0, U) data distribution for all x0 expectations.
+    """
+    N, d = x0_train.shape
+    k = Theta.shape[0]
+    dev = x0_train.device
+
+    mu_x0 = x0_train.mean(0)
+    X0_c  = x0_train - mu_x0
+
+    # Pre-activation mean: M_j^(n) = theta_j x0^(n) + gamma_j U^(n)
+    M = x0_train @ Theta.T + U_train @ Gamma.T   # (N, k)
+
+    s = sigma * (Theta * Theta).sum(1).sqrt()     # (k,)  noise-only std
+    z = M / s.unsqueeze(0)                        # (N, k)
+
+    z_np  = z.cpu().numpy()
+    Phi_z = torch.tensor(scipy_norm.cdf(z_np), device=dev, dtype=x0_train.dtype)
+    phi_z = torch.tensor(scipy_norm.pdf(z_np), device=dev, dtype=x0_train.dtype)
+
+    G  = M * Phi_z + s.unsqueeze(0) * phi_z      # (N, k)  g_j^(n)
+    C1 = s.unsqueeze(0) * Phi_z                   # (N, k)
+    C2 = s.unsqueeze(0) * phi_z / 2.0             # (N, k)
+
+    G_c = G - G.mean(0)
+    Cov_x0_phi = X0_c.T @ G_c / N                 # (d, k)
+
+    Sig_data  = G_c.T @ G_c / N                   # (k, k)
+
+    ThetaThetaT = Theta @ Theta.T                 # (k, k)
+    rho = sigma**2 * ThetaThetaT / (s.unsqueeze(1) * s.unsqueeze(0))
+    rho = rho.clamp(-1+1e-7, 1-1e-7)
+
+    EC1C1 = C1.T @ C1 / N
+    EC2C2 = C2.T @ C2 / N
+    Sig_noise = rho * EC1C1 + 2.0 * rho**2 * EC2C2
+
+    Sigma_phi = Sig_data + Sig_noise + lam * torch.eye(k, device=dev, dtype=x0_train.dtype)
+
+    A         = torch.linalg.solve(Sigma_phi, Cov_x0_phi.T)
+    explained = float(torch.trace(Cov_x0_phi @ A))
+    return max(0.0, trace_p0 - explained)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -284,10 +401,12 @@ def main():
         'linear_wiener',
         'rf_uncond_empirical_cf',   # empirical closed-form (train covariances)
         'rf_uncond_empirical_dir',  # empirical direct (W* on test)
-        'rf_uncond_theory',         # Gaussian/Stein theory
+        'rf_uncond_theory',         # Gaussian/Stein theory (Gaussian p0 approx)
+        'rf_uncond_theory_exact',   # exact theory: empirical p0, Hermite for noise only
         'rf_cond_empirical_cf',
         'rf_cond_empirical_dir',
         'rf_cond_theory',
+        'rf_cond_theory_exact',
     ]}
 
     print(f"Sweeping {N_SIGMA} sigma values ...")
@@ -344,6 +463,12 @@ def main():
                                    mu_x0, mu_U, trace_p0, sigma, LAM)
         res['rf_cond_theory'].append(L_c_th)
 
+        # --- Exact theory: empirical data distribution, Hermite for noise only ---
+        L_th_ex   = mmse_theory_data_uncond(Theta, x0_train, trace_p0, sigma, LAM)
+        L_c_th_ex = mmse_theory_data_cond(Theta, Gamma, x0_train, U_train, trace_p0, sigma, LAM)
+        res['rf_uncond_theory_exact'].append(L_th_ex)
+        res['rf_cond_theory_exact'].append(L_c_th_ex)
+
     # --- Save ---
     os.makedirs('tables', exist_ok=True)
     np.savez('tables/rf_theory_vs_empirical_cifar10.npz',
@@ -360,10 +485,11 @@ def main():
 
     # Panel 1: Unconditional
     ax = axes[0]
-    ax.plot(sigma, res['linear_wiener'],            'k-',   lw=2,   label='Linear Wiener (analytic)')
-    ax.plot(sigma, res['rf_uncond_theory'],         'b--',  lw=2,   label='RF uncond: Theory (Stein, Hermite n≤2)')
-    ax.plot(sigma, res['rf_uncond_empirical_cf'],   'b-',   lw=2,   label='RF uncond: Empirical closed-form')
-    ax.plot(sigma, res['rf_uncond_empirical_dir'],  'b-o',  lw=1.5, ms=4, label='RF uncond: Empirical direct (W* on test)')
+    ax.plot(sigma, res['linear_wiener'],              'k-',   lw=2,   label='Linear Wiener (analytic)')
+    ax.plot(sigma, res['rf_uncond_empirical_cf'],     'b-',   lw=2,   label='RF uncond: Empirical closed-form')
+    ax.plot(sigma, res['rf_uncond_empirical_dir'],    'b-o',  lw=1.5, ms=4, label='RF uncond: Empirical direct (W* on test)')
+    ax.plot(sigma, res['rf_uncond_theory_exact'],     'b--',  lw=2,   label='RF uncond: Theory exact (empirical p0, Hermite noise)')
+    ax.plot(sigma, res['rf_uncond_theory'],           'b:',   lw=1.5, label='RF uncond: Theory Gaussian p0 (Stein+Hermite)')
     ax.set_xscale('log')
     ax.set_xlabel('sigma'); ax.set_ylabel('MSE loss')
     ax.set_title('Unconditional: L_sigma')
@@ -371,10 +497,11 @@ def main():
 
     # Panel 2: Conditional
     ax = axes[1]
-    ax.plot(sigma, res['linear_wiener'],            'k-',   lw=2,   label='Linear Wiener (analytic)')
-    ax.plot(sigma, res['rf_cond_theory'],           'r--',  lw=2,   label='RF cond: Theory (Stein, Hermite n≤2)')
-    ax.plot(sigma, res['rf_cond_empirical_cf'],     'r-',   lw=2,   label='RF cond: Empirical closed-form')
-    ax.plot(sigma, res['rf_cond_empirical_dir'],    'r-o',  lw=1.5, ms=4, label='RF cond: Empirical direct (W* on test)')
+    ax.plot(sigma, res['linear_wiener'],              'k-',   lw=2,   label='Linear Wiener (analytic)')
+    ax.plot(sigma, res['rf_cond_empirical_cf'],       'r-',   lw=2,   label='RF cond: Empirical closed-form')
+    ax.plot(sigma, res['rf_cond_empirical_dir'],      'r-o',  lw=1.5, ms=4, label='RF cond: Empirical direct (W* on test)')
+    ax.plot(sigma, res['rf_cond_theory_exact'],       'r--',  lw=2,   label='RF cond: Theory exact (empirical p0, Hermite noise)')
+    ax.plot(sigma, res['rf_cond_theory'],             'r:',   lw=1.5, label='RF cond: Theory Gaussian p0 (Stein+Hermite)')
     ax.set_xscale('log')
     ax.set_xlabel('sigma'); ax.set_ylabel('MSE loss')
     ax.set_title('Conditional: L_sigma,U')
@@ -389,8 +516,8 @@ def main():
     # Print summary
     mid = N_SIGMA // 2
     print(f"\n=== Summary at sigma={sigma_grid[mid]:.3f} ===")
-    for k, v in res.items():
-        print(f"  {k:35s}: {v[mid]:.4f}")
+    for key, v in res.items():
+        print(f"  {key:40s}: {v[mid]:.4f}")
 
 
 if __name__ == '__main__':
