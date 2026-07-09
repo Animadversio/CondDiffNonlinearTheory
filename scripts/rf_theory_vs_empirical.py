@@ -117,135 +117,6 @@ def mmse_empirical_direct(Phi_train, X0_train, Phi_test, X0_test, lam):
     return mse
 
 
-# ---------------------------------------------------------------------------
-# Theoretical (Gaussian/Stein): unconditional
-# ---------------------------------------------------------------------------
-@torch.no_grad()
-def mmse_theory_uncond(Theta, eigvals, eigvecs, mu_x0, trace_p0, sigma, lam):
-    """
-    L_theory using Stein's lemma + Hermite expansion (truncated at n=2) for relu.
-
-    Theta: (k, d) random projection
-    eigvals, eigvecs: eigdecomp of Sigma_p0 = V Lambda V^T
-    mu_x0: (d,) data mean
-    """
-    k = Theta.shape[0]
-    d = Theta.shape[1]
-    dev = eigvals.device
-
-    # VtTheta: (d, k) = V^T Theta^T
-    VtTheta = eigvecs.T @ Theta.T  # (d, k)
-
-    # m_j = theta_j mu_x0  (k,)
-    m = Theta @ mu_x0   # (k,)
-
-    # S_j^2 = theta_j Sigma_p0 theta_j + sigma^2 ||theta_j||^2
-    theta_Sigma_theta = (VtTheta * eigvals.unsqueeze(1) * VtTheta).sum(0)  # (k,)
-    theta_norm_sq     = (Theta * Theta).sum(1)                              # (k,)
-    S_sq = theta_Sigma_theta + sigma ** 2 * theta_norm_sq                  # (k,)
-    S    = S_sq.clamp(min=1e-10).sqrt()                                    # (k,)
-
-    # Hermite coefficients for relu (closed-form via Stein's identity):
-    #   c0(m,S) = m Phi(m/S) + S phi(m/S)   [= E[relu]]
-    #   c1(m,S) = S Phi(m/S)                 [via Stein E[relu xi] = S P(l>0)]
-    #   c2(m,S) = S phi(m/S) / 2             [via Stein twice]
-    z   = (m / S).cpu().numpy()
-    phi_z = torch.tensor(scipy_norm.pdf(z), device=dev, dtype=eigvals.dtype)   # (k,)
-    Phi_z = torch.tensor(scipy_norm.cdf(z), device=dev, dtype=eigvals.dtype)   # (k,)
-
-    c1 = S * Phi_z         # (k,)   = c_1(m_j, S_j)
-    c2 = S * phi_z / 2.0  # (k,)   = c_2(m_j, S_j)
-    c0 = m * Phi_z + S * phi_z  # (k,)
-
-    # alpha^0_j = c1_j / S_j = Phi(m_j/S_j)   [= P(l_j > 0)]
-    alpha = Phi_z   # (k,)
-
-    # Cov(x0, phi)_{:j} = Sigma_p0 theta_j alpha_j
-    # Cov(x0,phi) = V Lambda (V^T Theta^T) diag(alpha)  — (d, k)
-    Cov_x0_phi = eigvecs @ ((eigvals.unsqueeze(1) * VtTheta) * alpha.unsqueeze(0))  # (d,k)
-
-    # Correlation r_tilde_ij = Cov(l_i, l_j) / (S_i S_j)
-    # Cov(l_i,l_j) = theta_i Sigma_p0 theta_j + sigma^2 theta_i theta_j
-    C_mat = VtTheta.T @ (eigvals.unsqueeze(1) * VtTheta) + sigma**2 * (Theta @ Theta.T)  # (k,k)
-    R = C_mat / (S.unsqueeze(1) * S.unsqueeze(0))  # (k,k) correlation
-    R = R.clamp(-1+1e-7, 1-1e-7)
-
-    # Sigma_phi via Hermite truncation at n=2:
-    #   Sigma_phi,ij = 1! r^1 c1_i c1_j + 2! r^2 c2_i c2_j
-    Sigma_phi_th = (1.0 * R   * c1.unsqueeze(1) * c1.unsqueeze(0)
-                  + 2.0 * R**2 * c2.unsqueeze(1) * c2.unsqueeze(0))  # (k,k)
-    Sigma_phi_th = Sigma_phi_th + lam * torch.eye(k, device=dev, dtype=eigvals.dtype)
-
-    # L_theory = Tr(Sigma_p0) - Tr(Cov Sigma_phi^{-1} Cov^T)
-    A         = torch.linalg.solve(Sigma_phi_th, Cov_x0_phi.T)  # (k, d)
-    explained = float(torch.trace(Cov_x0_phi @ A))
-    return max(0.0, trace_p0 - explained)
-
-
-# ---------------------------------------------------------------------------
-# Theoretical (Gaussian/Stein): conditional  phi^U = relu(Theta y + Gamma U)
-# ---------------------------------------------------------------------------
-@torch.no_grad()
-def mmse_theory_cond(Theta, Gamma, eigvals, eigvecs, Sigma_U, C_xU, mu_x0, mu_U,
-                     trace_p0, sigma, lam):
-    """
-    L_theory conditional using Stein's lemma (jointly Gaussian (x0, U) approx).
-
-    Sigma_U = Cov(U),  C_xU = Cov(x0, U) (d x n_classes)
-    """
-    k   = Theta.shape[0]
-    dev = eigvals.device
-
-    VtTheta = eigvecs.T @ Theta.T   # (d, k)
-
-    # m_tilde_j = theta_j mu_x0 + gamma_j mu_U  (k,)
-    m_tilde = Theta @ mu_x0 + Gamma @ mu_U   # (k,)
-
-    # S_tilde_j^2 = theta_j Sigma_p0 theta_j + 2 theta_j C_xU gamma_j
-    #             + gamma_j Sigma_U gamma_j + sigma^2 ||theta_j||^2
-    theta_Sigma_theta = (VtTheta * eigvals.unsqueeze(1) * VtTheta).sum(0)     # (k,)
-    cross_term        = 2.0 * (Theta @ C_xU @ Gamma.T).diagonal()             # (k,)
-    gamma_SU_gamma    = (Gamma @ Sigma_U @ Gamma.T).diagonal()                # (k,)
-    theta_norm_sq     = (Theta * Theta).sum(1)                                 # (k,)
-
-    S_sq = theta_Sigma_theta + cross_term + gamma_SU_gamma + sigma**2 * theta_norm_sq
-    S    = S_sq.clamp(min=1e-10).sqrt()   # (k,)
-
-    z     = (m_tilde / S).cpu().numpy()
-    phi_z = torch.tensor(scipy_norm.pdf(z), device=dev, dtype=eigvals.dtype)
-    Phi_z = torch.tensor(scipy_norm.cdf(z), device=dev, dtype=eigvals.dtype)
-
-    c1 = S * Phi_z
-    c2 = S * phi_z / 2.0
-    alpha = Phi_z   # (k,)
-
-    # Cov(x0, phi^U)_{:j} = (Sigma_p0 theta_j + C_xU gamma_j) alpha_j
-    # A_U = (Sigma_p0 Theta^T + C_xU Gamma^T) diag(alpha)
-    # Sigma_p0 Theta^T = V Lambda VtTheta  (d x k)
-    # C_xU Gamma^T                         (d x k)
-    SigTheta = eigvecs @ (eigvals.unsqueeze(1) * VtTheta)   # (d, k)
-    CxUGamma = C_xU @ Gamma.T                               # (d, k)
-    Cov_cond = (SigTheta + CxUGamma) * alpha.unsqueeze(0)   # (d, k)
-
-    # Correlation for cond features:
-    # Cov(l_i, l_j) = theta_i Sigma_p0 theta_j + theta_i C_xU gamma_j + gamma_i C_Ux theta_j
-    #               + gamma_i Sigma_U gamma_j + sigma^2 theta_i theta_j
-    C_mat = (VtTheta.T @ (eigvals.unsqueeze(1) * VtTheta)
-           + Theta @ C_xU @ Gamma.T
-           + Gamma @ C_xU.T @ Theta.T
-           + Gamma @ Sigma_U @ Gamma.T
-           + sigma**2 * Theta @ Theta.T)   # (k, k)
-    R = C_mat / (S.unsqueeze(1) * S.unsqueeze(0))
-    R = R.clamp(-1+1e-7, 1-1e-7)
-
-    Sigma_phi_th = (1.0 * R   * c1.unsqueeze(1) * c1.unsqueeze(0)
-                  + 2.0 * R**2 * c2.unsqueeze(1) * c2.unsqueeze(0))
-    Sigma_phi_th = Sigma_phi_th + lam * torch.eye(k, device=dev, dtype=eigvals.dtype)
-
-    A         = torch.linalg.solve(Sigma_phi_th, Cov_cond.T)
-    explained = float(torch.trace(Cov_cond @ A))
-    return max(0.0, trace_p0 - explained)
-
 
 # ---------------------------------------------------------------------------
 # Exact theory using data distribution (no Gaussian p_0 assumption)
@@ -377,19 +248,12 @@ def main():
     U_test  = F.one_hot(y_test,  N_CLASSES).float()
 
     print("Pre-computing data statistics ...")
-    # Eigdecomp of Sigma_p0 (once)
     X0_c    = x0_train - x0_train.mean(0)
     Sigma_p0 = X0_c.T @ X0_c / (N_TRAIN - 1)
     trace_p0 = float(Sigma_p0.diagonal().sum())
-    eigvals, eigvecs = torch.linalg.eigh(Sigma_p0)
+    # Linear Wiener baseline needs eigdecomp
+    eigvals, _ = torch.linalg.eigh(Sigma_p0)
     eigvals = eigvals.clamp(min=0)
-    mu_x0   = x0_train.mean(0)     # (d,)
-
-    # Class label statistics for conditional theory
-    U_c     = U_train - U_train.mean(0)
-    Sigma_U = U_c.T @ U_c / (N_TRAIN - 1)        # (10, 10)
-    C_xU    = X0_c.T @ U_c  / (N_TRAIN - 1)      # (d, 10)
-    mu_U    = U_train.mean(0)                      # (10,)
 
     # Fixed random feature matrices
     Theta = torch.randn(K, d, device=device) / (d ** 0.5)    # (k, d)
@@ -401,12 +265,10 @@ def main():
         'linear_wiener',
         'rf_uncond_empirical_cf',   # empirical closed-form (train covariances)
         'rf_uncond_empirical_dir',  # empirical direct (W* on test)
-        'rf_uncond_theory',         # Gaussian/Stein theory (Gaussian p0 approx)
-        'rf_uncond_theory_exact',   # exact theory: empirical p0, Hermite for noise only
+        'rf_uncond_theory',         # theory: empirical p0, Hermite for noise only
         'rf_cond_empirical_cf',
         'rf_cond_empirical_dir',
         'rf_cond_theory',
-        'rf_cond_theory_exact',
     ]}
 
     print(f"Sweeping {N_SIGMA} sigma values ...")
@@ -446,8 +308,8 @@ def main():
         L_edir = mmse_empirical_direct(Phi_tr, X0_rep, Phi_test, x0_test, LAM)
         res['rf_uncond_empirical_dir'].append(L_edir)
 
-        # --- Uncond theory (Gaussian/Stein) ---
-        L_th = mmse_theory_uncond(Theta, eigvals, eigvecs, mu_x0, trace_p0, sigma, LAM)
+        # --- Uncond theory: empirical p0, Hermite for noise only ---
+        L_th = mmse_theory_data_uncond(Theta, x0_train, trace_p0, sigma, LAM)
         res['rf_uncond_theory'].append(L_th)
 
         # --- Cond empirical closed-form ---
@@ -458,16 +320,9 @@ def main():
         L_c_edir = mmse_empirical_direct(Phi_c_tr, X0_rep, Phi_c_test, x0_test, LAM)
         res['rf_cond_empirical_dir'].append(L_c_edir)
 
-        # --- Cond theory (Gaussian/Stein, jointly Gaussian (x0,U)) ---
-        L_c_th = mmse_theory_cond(Theta, Gamma, eigvals, eigvecs, Sigma_U, C_xU,
-                                   mu_x0, mu_U, trace_p0, sigma, LAM)
+        # --- Cond theory: empirical (x0,U) distribution, Hermite for noise only ---
+        L_c_th = mmse_theory_data_cond(Theta, Gamma, x0_train, U_train, trace_p0, sigma, LAM)
         res['rf_cond_theory'].append(L_c_th)
-
-        # --- Exact theory: empirical data distribution, Hermite for noise only ---
-        L_th_ex   = mmse_theory_data_uncond(Theta, x0_train, trace_p0, sigma, LAM)
-        L_c_th_ex = mmse_theory_data_cond(Theta, Gamma, x0_train, U_train, trace_p0, sigma, LAM)
-        res['rf_uncond_theory_exact'].append(L_th_ex)
-        res['rf_cond_theory_exact'].append(L_c_th_ex)
 
     # --- Save ---
     os.makedirs('tables', exist_ok=True)
@@ -488,8 +343,7 @@ def main():
     ax.plot(sigma, res['linear_wiener'],              'k-',   lw=2,   label='Linear Wiener (analytic)')
     ax.plot(sigma, res['rf_uncond_empirical_cf'],     'b-',   lw=2,   label='RF uncond: Empirical closed-form')
     ax.plot(sigma, res['rf_uncond_empirical_dir'],    'b-o',  lw=1.5, ms=4, label='RF uncond: Empirical direct (W* on test)')
-    ax.plot(sigma, res['rf_uncond_theory_exact'],     'b--',  lw=2,   label='RF uncond: Theory exact (empirical p0, Hermite noise)')
-    ax.plot(sigma, res['rf_uncond_theory'],           'b:',   lw=1.5, label='RF uncond: Theory Gaussian p0 (Stein+Hermite)')
+    ax.plot(sigma, res['rf_uncond_theory'],           'b--',  lw=2,   label='RF uncond: Theory (Hermite n≤2 for noise)')
     ax.set_xscale('log')
     ax.set_xlabel('sigma'); ax.set_ylabel('MSE loss')
     ax.set_title('Unconditional: L_sigma')
@@ -500,8 +354,7 @@ def main():
     ax.plot(sigma, res['linear_wiener'],              'k-',   lw=2,   label='Linear Wiener (analytic)')
     ax.plot(sigma, res['rf_cond_empirical_cf'],       'r-',   lw=2,   label='RF cond: Empirical closed-form')
     ax.plot(sigma, res['rf_cond_empirical_dir'],      'r-o',  lw=1.5, ms=4, label='RF cond: Empirical direct (W* on test)')
-    ax.plot(sigma, res['rf_cond_theory_exact'],       'r--',  lw=2,   label='RF cond: Theory exact (empirical p0, Hermite noise)')
-    ax.plot(sigma, res['rf_cond_theory'],             'r:',   lw=1.5, label='RF cond: Theory Gaussian p0 (Stein+Hermite)')
+    ax.plot(sigma, res['rf_cond_theory'],             'r--',  lw=2,   label='RF cond: Theory (Hermite n≤2 for noise)')
     ax.set_xscale('log')
     ax.set_xlabel('sigma'); ax.set_ylabel('MSE loss')
     ax.set_title('Conditional: L_sigma,U')
