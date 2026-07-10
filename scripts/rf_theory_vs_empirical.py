@@ -160,8 +160,10 @@ def mmse_theory_uncond(Theta, x0_train, trace_p0, sigma, lam):
 
     From newfile2.tex §1:
       g_j(x0) = c0(M_j, s_j) = M_j Phi(z_j) + s_j phi(z_j)   [Gaussian-blurred ReLU]
-      c1(M_j, s_j) = (1/1!) E[f(xi) He_1(xi)] = s_j Phi(z_j)  [He_1 = xi]
-      c2(M_j, s_j) = (1/2!) E[f(xi) He_2(xi)] = s_j phi(z_j)/2 [He_2 = xi^2-1]
+      c1(M_j, s_j) = (1/1!) E[f(xi) He_1(xi)] = s_j Phi(z_j)        [He_1 = xi]
+      c2(M_j, s_j) = (1/2!) E[f(xi) He_2(xi)] = s_j phi(z_j)/2      [He_2 = xi^2-1]
+      c3(M_j, s_j) = (1/3!) E[f(xi) He_3(xi)] = M_j phi(z_j)/6      [He_3 = xi^3-3xi]
+        derivation: E[relu(M+s*xi)He_3] = s*E[He_2(xi)*1(xi>-z)] = s*z*phi(z) = M*phi(z)
       rho_ij = Corr(xi_i, xi_j) = theta_i^T theta_j / (||theta_i|| ||theta_j||)
 
       Cov(x0, phi)_{ij} = E_{x0}[(x0_i - mu_i) g_j(x0)]
@@ -187,9 +189,10 @@ def mmse_theory_uncond(Theta, x0_train, trace_p0, sigma, lam):
 
     # g_j^(n) = c0(M_j, s_j) = M_j Phi(z_j) + s_j phi(z_j)
     G  = M * Phi_z + s.unsqueeze(0) * phi_z     # (N, k)
-    # Hermite coefficients c1, c2 per sample per feature
+    # Hermite coefficients c1, c2, c3 per sample per feature
     C1 = s.unsqueeze(0) * Phi_z                  # (N, k)   c1 = s Phi(z)
     C2 = s.unsqueeze(0) * phi_z / 2.0            # (N, k)   c2 = s phi(z) / 2
+    C3 = M * phi_z / 6.0                         # (N, k)   c3 = M phi(z) / 6
 
     # Cov(x0, phi)_{ij} = E_{x0}[(x0_i - mu_i) g_j(x0)]
     Cov_x0_phi = X0_c.T @ G / N                 # (d, k)   [centered by X0_c, tower property]
@@ -204,10 +207,11 @@ def mmse_theory_uncond(Theta, x0_train, trace_p0, sigma, lam):
     rho  = (Theta @ Theta.T) / (norm.unsqueeze(1) * norm.unsqueeze(0))  # (k, k)
     rho  = rho.clamp(-1 + 1e-7, 1 - 1e-7)
 
-    # E_{x0}[n! rho^n c_n_i c_n_j] for n=1,2
+    # E_{x0}[n! rho^n c_n_i c_n_j] for n=1,2,3
     EC1C1 = C1.T @ C1 / N                        # E[c1_i c1_j]
     EC2C2 = C2.T @ C2 / N                        # E[c2_i c2_j]
-    Sig_noise = rho * EC1C1 + 2.0 * rho**2 * EC2C2
+    EC3C3 = C3.T @ C3 / N                        # E[c3_i c3_j]
+    Sig_noise = rho * EC1C1 + 2.0 * rho**2 * EC2C2 + 6.0 * rho**3 * EC3C3
 
     Sigma_phi = Sig_data + Sig_noise + lam * torch.eye(k, device=dev)
 
@@ -239,6 +243,7 @@ def mmse_theory_cond(Theta, Gamma, x0_train, U_train, trace_p0, sigma, lam):
     G  = M * Phi_z + s.unsqueeze(0) * phi_z
     C1 = s.unsqueeze(0) * Phi_z
     C2 = s.unsqueeze(0) * phi_z / 2.0
+    C3 = M * phi_z / 6.0                         # c3 = M phi(z) / 6
 
     Cov_x0_phi = X0_c.T @ G / N
 
@@ -251,7 +256,8 @@ def mmse_theory_cond(Theta, Gamma, x0_train, U_train, trace_p0, sigma, lam):
 
     EC1C1 = C1.T @ C1 / N
     EC2C2 = C2.T @ C2 / N
-    Sig_noise = rho * EC1C1 + 2.0 * rho**2 * EC2C2
+    EC3C3 = C3.T @ C3 / N
+    Sig_noise = rho * EC1C1 + 2.0 * rho**2 * EC2C2 + 6.0 * rho**3 * EC3C3
 
     Sigma_phi = Sig_data + Sig_noise + lam * torch.eye(k, device=dev)
 
@@ -412,7 +418,7 @@ def main():
     ax.plot(sg, res['rf_uncond_empirical_cf'],       'b-',  lw=2,   label='RF uncond: Empirical CF (in-sample)')
     ax.plot(sg, res['rf_uncond_empirical_train'],    'b--', lw=1.5, label='RF uncond: Train x0 + fresh Z (like oracle)')
     ax.plot(sg, res['rf_uncond_empirical_dir'],      'b:',  lw=1.5, label='RF uncond: Test images + fresh Z')
-    ax.plot(sg, res['rf_uncond_theory'],             'b-.', lw=2,   label='RF uncond: Theory (Hermite n≤2)')
+    ax.plot(sg, res['rf_uncond_theory'],             'b-.', lw=2,   label='RF uncond: Theory (Hermite n≤3)')
     ax.set_xscale('log'); ax.set_xlabel('sigma'); ax.set_ylabel('MSE loss')
     ax.set_title(f'Unconditional: L_sigma  (k={K}, d={x0_train.shape[1]})')
     ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
@@ -422,7 +428,7 @@ def main():
     ax.plot(sg, res['rf_cond_empirical_cf'],         'r-',  lw=2,   label='RF cond: Empirical CF (in-sample)')
     ax.plot(sg, res['rf_cond_empirical_train'],      'r--', lw=1.5, label='RF cond: Train x0 + fresh Z (like oracle)')
     ax.plot(sg, res['rf_cond_empirical_dir'],        'r:',  lw=1.5, label='RF cond: Test images + fresh Z')
-    ax.plot(sg, res['rf_cond_theory'],               'r-.', lw=2,   label='RF cond: Theory (Hermite n≤2)')
+    ax.plot(sg, res['rf_cond_theory'],               'r-.', lw=2,   label='RF cond: Theory (Hermite n≤3)')
     ax.set_xscale('log'); ax.set_xlabel('sigma'); ax.set_ylabel('MSE loss')
     ax.set_title(f'Conditional: L_sigma,U  (k={K}, d={x0_train.shape[1]})')
     ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
