@@ -188,7 +188,7 @@ class GaussianMixture:
             D_c = self.means[c] + (y - self.means[c]) @ W_c.T  # (N_mc, d)
             D_star += post[:, c:c+1] * D_c
 
-        return float(np.mean((D_star - x0) ** 2))
+        return float(np.mean(np.sum((D_star - x0) ** 2, axis=1)))
 
     # ------------------------------------------------------------------
     # Closed-form Stein formula for Cov(x0, phi^U) — ReLU nonlinearity
