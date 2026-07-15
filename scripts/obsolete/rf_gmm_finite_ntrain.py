@@ -97,6 +97,32 @@ def nw_mmse(x0: np.ndarray, sigma: float, n_noise: int, rng) -> float:
     return total_sq / (n_noise * N)
 
 
+def nw_mmse_cond(x0: np.ndarray, labels: np.ndarray, sigma: float, n_noise: int, rng) -> float:
+    """
+    CLASS-CONDITIONAL optimal denoiser for the empirical distribution (label observed).
+    Kernel pool restricted to same-class training points:
+      D*(y, c) = Σ_{j: class_j=c} x0_j K(y,x0_j) / Σ_{j: class_j=c} K(y,x0_j).
+    This is the correct conditional oracle floor (<= unconditional nw_mmse) and the
+    valid lower bound for the conditional RF denoiser.
+    """
+    N, d = x0.shape
+    assert N <= NW_MAX_N, "N too large for NW; skip before calling"
+    same = (labels[:, None] == labels[None, :])          # (N, N) same-class mask
+    total_sq = 0.0
+    for _ in range(n_noise):
+        z = rng.standard_normal((N, d))
+        y = x0 + sigma * z                                # (N, d)
+        diff = y[:, None, :] - x0[None, :, :]            # (N, N, d)
+        log_w = -np.einsum('ijk,ijk->ij', diff, diff) / (2.0 * sigma ** 2)  # (N, N)
+        log_w = np.where(same, log_w, -np.inf)           # restrict pool to same class
+        log_w -= log_w.max(axis=1, keepdims=True)
+        w = np.exp(log_w)
+        w /= w.sum(axis=1, keepdims=True)
+        D_star = w @ x0                                   # (N, d)
+        total_sq += np.sum((D_star - x0) ** 2)
+    return total_sq / (n_noise * N)
+
+
 # ---------------------------------------------------------------------------
 # Empirical closed-form MMSE accumulator
 # ---------------------------------------------------------------------------
@@ -194,11 +220,16 @@ def main():
             eigvals = np.linalg.eigvalsh(Sigma_p0_emp)
             lin_wiener_emp = float(np.sum(sigma**2 * eigvals / (eigvals + sigma**2)))
             nw = None
+            nw_cond = None
             if N_train <= NW_MAX_N:
                 nw = nw_mmse(x0_tr, sigma, N_NOISE_NW, rng_eval)
-            emp_baselines[sigma] = {'linear_wiener': lin_wiener_emp, 'nw': nw}
+                # separate rng so the conditional NW does not perturb the CF noise stream
+                rng_nw_c = np.random.default_rng(SEED + N_train + 778)
+                nw_cond = nw_mmse_cond(x0_tr, labels_tr, sigma, N_NOISE_NW, rng_nw_c)
+            emp_baselines[sigma] = {'linear_wiener': lin_wiener_emp, 'nw': nw, 'nw_cond': nw_cond}
             nw_str = f"{nw:.3f}" if nw is not None else "N/A"
-            print(f"  sigma={sigma:.2f}: emp_linear={lin_wiener_emp:.3f}, nw={nw_str}")
+            nwc_str = f"{nw_cond:.3f}" if nw_cond is not None else "N/A"
+            print(f"  sigma={sigma:.2f}: emp_linear={lin_wiener_emp:.3f}, nw={nw_str}, nw_cond={nwc_str}")
 
         # Sweep over k
         res = {sigma: {'rf_emp_uncond': [], 'rf_emp_cond': [],
@@ -257,6 +288,8 @@ def main():
             save_d[f'emp_linear_s{sg}'] = emp_baselines[sg]['linear_wiener']
             if emp_baselines[sg]['nw'] is not None:
                 save_d[f'nw_s{sg}'] = emp_baselines[sg]['nw']
+            if emp_baselines[sg].get('nw_cond') is not None:
+                save_d[f'nw_cond_s{sg}'] = emp_baselines[sg]['nw_cond']
         np.savez(f'tables/rf_gmm_finite_N{N_train}.npz', **save_d)
         print(f"  Saved tables/rf_gmm_finite_N{N_train}.npz")
 
@@ -303,9 +336,11 @@ def plot_one(N_train, res, emp_baselines, gmm_baselines, trace_p0):
                        label='Emp. linear Wiener')
 
             # NW exact MMSE for finite dataset (solid horizontal)
-            if eb['nw'] is not None:
-                ax.axhline(eb['nw'], color=color, lw=2, ls='-',
-                           label='NW exact (emp. dist.)')
+            # row 0 = uncond -> unconditional NW; row 1 = cond -> class-conditional NW
+            nw_val = eb.get('nw_cond') if row == 1 else eb['nw']
+            if nw_val is not None:
+                nw_lbl = 'NW exact (cond, emp. dist.)' if row == 1 else 'NW exact (emp. dist.)'
+                ax.axhline(nw_val, color=color, lw=2, ls='-', label=nw_lbl)
 
             # RF empirical CF (circles)
             ax.plot(k_over_d, res[sigma][emp_key], color=color, lw=2,

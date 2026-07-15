@@ -130,6 +130,38 @@ def mmse_nw(x0_train, sigma, n_noise=N_NOISE_NW, rng=None):
     return total_mse / (n_noise * N)
 
 
+def mmse_nw_cond(x0_train, labels_train, sigma, n_noise=N_NOISE_NW, rng=None):
+    """
+    CLASS-CONDITIONAL Nadaraya-Watson MMSE on the empirical distribution.
+
+    Bayes-optimal denoiser for the empirical distribution WHEN the class label
+    is observed: the kernel pool is restricted to same-class training points.
+      D_NW(y, c) = sum_{j: class_j=c} x_j K(y,x_j) / sum_{j: class_j=c} K(y,x_j)
+
+    This is the correct conditional oracle floor. It is <= the unconditional NW
+    (knowing the class only helps) and is the valid lower bound for the
+    *conditional* RF denoiser. (The unconditional mmse_nw must NOT be used as
+    the conditional floor.)
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    N, d = x0_train.shape
+    same = (labels_train[:, None] == labels_train[None, :])   # (N, N) same-class mask
+    total_mse = 0.0
+    for _ in range(n_noise):
+        z = rng.standard_normal((N, d))
+        y = x0_train + sigma * z
+        diff = y[:, None, :] - x0_train[None, :, :]           # (N, N, d)
+        log_w = -np.einsum('ijk,ijk->ij', diff, diff) / (2 * sigma**2)  # (N, N)
+        log_w = np.where(same, log_w, -np.inf)                # restrict pool to same class
+        log_w -= log_w.max(axis=1, keepdims=True)
+        w = np.exp(log_w)
+        w /= w.sum(axis=1, keepdims=True)
+        D_star = w @ x0_train
+        total_mse += float(np.sum((D_star - x0_train)**2))
+    return total_mse / (n_noise * N)
+
+
 # ---------------------------------------------------------------------------
 # RF direct regression MMSE  (the "RF computation" Binxu wants)
 # ---------------------------------------------------------------------------
@@ -303,10 +335,14 @@ def main():
             if N_train <= NW_MAX_N:
                 rng_nw = np.random.default_rng(SEED + N_train + 777)
                 bl['nw_mmse'] = mmse_nw(x0_train, sigma, n_noise=N_NOISE_NW, rng=rng_nw)
+                rng_nw_c = np.random.default_rng(SEED + N_train + 778)
+                bl['nw_mmse_cond'] = mmse_nw_cond(x0_train, labels_train, sigma,
+                                                  n_noise=N_NOISE_NW, rng=rng_nw_c)
                 print(f"  sigma={sigma:.2f}: emp_lin_wiener={bl['linear_wiener']:.3f}, "
-                      f"nw_mmse={bl['nw_mmse']:.3f}")
+                      f"nw_mmse={bl['nw_mmse']:.3f}, nw_mmse_cond={bl['nw_mmse_cond']:.3f}")
             else:
                 bl['nw_mmse'] = None
+                bl['nw_mmse_cond'] = None
                 print(f"  sigma={sigma:.2f}: emp_lin_wiener={bl['linear_wiener']:.3f}, "
                       f"nw_mmse=N/A (N too large)")
             emp_baselines[sigma] = bl
@@ -389,6 +425,8 @@ def main():
             save_dict[f'emp_lin_wiener_N{N_train}_s{sg}'] = bl['linear_wiener']
             if bl['nw_mmse'] is not None:
                 save_dict[f'nw_mmse_N{N_train}_s{sg}'] = bl['nw_mmse']
+            if bl.get('nw_mmse_cond') is not None:
+                save_dict[f'nw_mmse_cond_N{N_train}_s{sg}'] = bl['nw_mmse_cond']
     for sg in SIGMA_VALUES:
         for bkey, bval in pop_baselines[sg].items():
             save_dict[f'pop_{bkey}_s{sg}'] = bval
@@ -436,9 +474,13 @@ def plot_one(N_train, results, emp_baselines, pop_baselines, trace_p0_emp,
                        label='Emp. linear Wiener')
 
             # --- NW MMSE (green) — oracle for finite dataset ---
-            if bl_emp['nw_mmse'] is not None:
-                ax.axhline(bl_emp['nw_mmse'], color='forestgreen', ls='-', lw=1.5,
-                           label='NW MMSE (oracle)')
+            # row 0 = Uncond -> unconditional NW; row 1 = Cond -> class-conditional NW.
+            # (Using the unconditional NW on the conditional row understates the
+            #  conditioning gain and is not a valid floor for the conditional RF denoiser.)
+            nw_val = bl_emp.get('nw_mmse_cond') if row == 1 else bl_emp['nw_mmse']
+            if nw_val is not None:
+                nw_lbl = 'NW MMSE (cond oracle)' if row == 1 else 'NW MMSE (oracle)'
+                ax.axhline(nw_val, color='forestgreen', ls='-', lw=1.5, label=nw_lbl)
 
             # --- RF direct regression (blue, solid) ---
             ax.plot(k_over_d, results[sigma][direct_key], color='steelblue', lw=2,
