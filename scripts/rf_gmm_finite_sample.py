@@ -120,8 +120,10 @@ def make_gmm(seed=SEED):
     means[0, 0] = 2.0
     means[1, 0] = -1.0; means[1, 1] = 1.5
     means[2, 0] = -1.0; means[2, 1] = -1.0; means[2, 2] = 1.2
-    S0 = np.diag([1.2, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4])
-    S1 = np.diag([0.4, 1.0, 0.8, 0.4, 0.4, 0.4, 0.4, 0.4])
+    s0_diag = np.full(d, 0.4); s0_diag[0] = 1.2
+    S0 = np.diag(s0_diag)
+    s1_diag = np.full(d, 0.4); s1_diag[0] = 0.4; s1_diag[1] = 1.0; s1_diag[2] = 0.8
+    S1 = np.diag(s1_diag)
     A = rng.standard_normal((d, d)) * 0.3
     S2 = A @ A.T + 0.5 * np.eye(d)
     return GaussianMixture(weights=np.array(WEIGHTS), means=means,

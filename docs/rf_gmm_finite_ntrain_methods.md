@@ -1,29 +1,31 @@
 # Methods: RF Denoiser on Finite Training Sets
 
-Script: `scripts/rf_gmm_finite_ntrain.py`
-Theory function: `core/gmm.mmse_theory_joint_gaussian`
-Reference: `docs/newfile2_article.pdf` Section 3 (Jointly Gaussian x0, U)
+Script: `scripts/rf_gmm_finite_sample.py`
+Theory functions: `core/gmm.mmse_theory_gmm_pop`, `core/rf_gmm_estimators_torch.mmse_theory_gmm_pop_t`
+Reference: `docs/newfile2_article.pdf` Sections 2–3
 
 ---
 
 ## Setup
 
-For each N_train in {8, 64, 128, 256, 1024, 50000}:
+For each N_train in {16, 64, 256, 1024}:
 
 - Sample fixed training set: `(x0_train, U_train)` with `x0_train` shape `(N_train, d)`, `U_train` shape `(N_train, C)` one-hot
-- Compute empirical second-order statistics from the N_train samples:
+- The target distribution is the empirical distribution: uniform mixture of N_train Dirac deltas.
+- Compute empirical second-order statistics from the N_train samples (using `/N` for consistency with the empirical distribution's MMSE):
 
 ```
-mu_x0    = (1/N) sum_i x0_i                          (d,)
-mu_U     = (1/N) sum_i U_i                            (C,)
-Sigma_p0 = (1/(N-1)) X0_c^T X0_c                     (d, d)
-C_xU     = (1/(N-1)) X0_c^T U_c                      (d, C)   [cross-covariance]
-Sigma_U  = (1/(N-1)) U_c^T U_c                        (C, C)
+mu_x0    = (1/N) sum_i x0_i                       (d,)
+Sigma_p0 = (1/N) X0_c^T X0_c                      (d, d)   [empirical covariance, /N not /N-1]
 ```
 
-where `X0_c = x0_train - mu_x0`, `U_c = U_train - mu_U`.
+Random feature projections `Theta` (k, d) ~ N(0,1)/sqrt(d) and `Gamma` (k, C) ~ N(0,1)/sqrt(C)
+are shared across all N_train values.
 
-Random feature projections `Theta` (k, d) and `Gamma` (k, C) are shared across all N_train values.
+**Population GMM** (d=8 or d=32, C=3 classes):
+- Component means: mu_0=(2,0,...), mu_1=(-1,1.5,0,...), mu_2=(-1,-1,1.2,0,...) in R^d
+- Covariances: S0 = diag(1.2, 0.4, ...), S1 = diag(0.4, 1.0, 0.8, 0.4,...), S2 = random (AA^T + 0.5I)
+- Equal weights w_c = 1/3
 
 ---
 
@@ -49,76 +51,110 @@ This is the **empirical closed-form** — no analytical formula, directly from d
 
 ---
 
-## Method 2: RF Theory — Jointly Gaussian (x0, U) [Section 3]
+## Method 2: RF Theory — Per-Component GMM Population (N→∞) [Corrected]
 
-Uses ONLY the second-order empirical statistics above (no individual GMM component knowledge).
-Assumes (x0, U) is jointly Gaussian with the estimated moments.
+**Key fix:** U = e_c is a one-hot vector (constant given component c), NOT Gaussian.
+Using a single jointly-Gaussian (x0, U) model was incorrect. The correct approach
+treats each GMM component separately and sums over components.
 
-### Conditional case (with U):
+Theory function: `mmse_theory_gmm_pop` / `mmse_theory_gmm_pop_t`
 
-**Pre-activation mean and variance** for each feature j:
+### Per-component pre-activation statistics
+
+For each component c and feature j:
 ```
-m_tilde_j = theta_j^T mu_x0 + gamma_j^T mu_U
+mbar_{cj} = theta_j^T mu_c + Gamma[j,c]           (scalar, conditional)
+           = theta_j^T mu_c                         (scalar, unconditional)
 
-S_tilde_j^2 = theta_j^T Sigma_p0 theta_j
-             + 2 theta_j^T C_xU gamma_j
-             + gamma_j^T Sigma_U gamma_j
-             + sigma^2 ||theta_j||^2
-```
-
-**Stein coefficient:**
-```
-alpha_j = c1(m_tilde_j, S_tilde_j) / S_tilde_j
-
-where c1(m, s) = s * Phi(m/s)    [Phi = standard normal CDF]
+S_{cj}^2  = theta_j^T Sigma_c theta_j + sigma^2 ||theta_j||^2
 ```
 
-**Covariance Cov(x0, phi^U):**
+where `mu_c`, `Sigma_c` are the GMM component mean and covariance.
+
+### Hermite coefficients of ReLU (definition: c_n = (1/n!) <relu, He_n>_Gaussian)
+
 ```
-Cov(x0, phi^U)_{:,j} = (Sigma_p0 theta_j + C_xU gamma_j) * alpha_j
-
-Matrix form:  Cov = (Sigma_p0 @ Theta^T + C_xU @ Gamma^T) * alpha[None, :]   (d, k)
-```
-
-**Joint correlation r_tilde_ij:**
-```
-Numerator_ij = theta_i^T Sigma_p0 theta_j
-             + theta_i^T C_xU gamma_j
-             + gamma_i^T C_Ux theta_j
-             + gamma_i^T Sigma_U gamma_j
-             + sigma^2 theta_i^T theta_j
-
-r_tilde_ij = Numerator_ij / (S_tilde_i * S_tilde_j)
-
-Matrix form:  Num = Theta Sigma_p0 Theta^T + sigma^2 Theta Theta^T
-                  + Theta C_xU Gamma^T + (Theta C_xU Gamma^T)^T
-                  + Gamma Sigma_U Gamma^T
-              r_tilde = Num / outer(S_tilde, S_tilde)
+c0(m, s) = s * phi(m/s) + m * Phi(m/s)             [E[relu(m + sz)]]
+c1(m, s) = s * Phi(m/s)                             [first Hermite coeff]
+c2(m, s) = s * phi(m/s) / 2
+c3(m, s) = -m * phi(m/s) / 6                        [NEGATIVE sign — sign matters!]
 ```
 
-**Feature covariance via Hermite series (n=1,2,3):**
+where `phi` = standard normal PDF, `Phi` = standard normal CDF, `z ~ N(0,1)`.
+
+### Stein covariance (per component, conditional)
+
 ```
-Sigma^U_{phi,ij} = sum_{n>=1} n! * r_tilde_ij^n * c_n(m_tilde_i, S_tilde_i) * c_n(m_tilde_j, S_tilde_j)
+alpha_{cj} = c1(mbar_{cj}, S_{cj}) / S_{cj}
 
-where:
-  c1(m, s) = s Phi(m/s)
-  c2(m, s) = s phi(m/s) / 2          [phi = standard normal PDF]
-  c3(m, s) = m phi(m/s) / 6
+Cov(x0, phi_j | c) = Sigma_c theta_j * alpha_{cj} + (mu_c - mu) * c0_{cj}
 
-Matrix form:  Sigma_phi = 1! r_tilde * outer(C1,C1)
-                        + 2! r_tilde^2 * outer(C2,C2)
-                        + 3! r_tilde^3 * outer(C3,C3)
-                        + lam * I
+where mu = sum_c w_c mu_c  (population mean)
+```
+
+Aggregate over components:
+```
+Cov(x0, phi_j) = sum_c w_c [Sigma_c theta_j * alpha_{cj} + (mu_c - mu) * c0_{cj}]
+```
+
+Matrix form `(d, k)`:
+```
+Cov = sum_c w_c [Sigma_c @ Theta^T * alpha_c[None,:] + outer(mu_c - mu, c0_c)]
+```
+
+### Feature covariance Sigma_phi
+
+**Between-component term:**
+```
+Sigma_phi^between = sum_c w_c outer(c0_c - mu_phi, c0_c - mu_phi)
+
+where mu_phi = sum_c w_c c0_c    (mean of phi across population)
+      c0_c   = [c0(mbar_{c1}, S_{c1}), ..., c0(mbar_{ck}, S_{ck})]   (k,)
+```
+
+**Within-component term** (Mehler / Hermite expansion):
+
+For features i,j within component c, the full data+noise correlation is:
+```
+r_{ij,c} = (theta_i^T Sigma_c theta_j + sigma^2 theta_i^T theta_j) / (S_{ci} * S_{cj})
+```
+
+Hermite series (n=1,2,3):
+```
+Sigma_phi^within_c = sum_{n=1}^{3} n! * r_c^{[n]} * outer(Cn_c, Cn_c)
+
+where r_c^{[n]} denotes elementwise power,
+      C1_c = [c1(mbar_{c1}, S_{c1}), ...]   (k,)
+      C2_c = [c2(mbar_{c2}, S_{c2}), ...]   (k,)
+      C3_c = [c3(mbar_{c3}, S_{c3}), ...]   (k,)
+```
+
+**Exact diagonal (replaces truncated series at r=1):**
+
+At i=j, r_{ii,c} = 1 and the Hermite series sum_n n!·(c_n)^2 diverges.
+Replace diagonal entries with the exact formula:
+```
+Var[relu(mbar_{cj} + S_{cj} z)] = E[relu^2] - c0^2
+  = (mbar_{cj}^2 + S_{cj}^2) * Phi(mbar_{cj}/S_{cj})
+    + mbar_{cj} * S_{cj} * phi(mbar_{cj}/S_{cj})
+    - c0(mbar_{cj}, S_{cj})^2
+```
+
+**Total:**
+```
+Sigma_phi = Sigma_phi^between + sum_c w_c Sigma_phi^within_c + lam * I
 ```
 
 **MMSE:**
 ```
-MMSE = Tr(Sigma_p0) - Tr(Cov @ Sigma_phi^{-1} @ Cov^T)
+MMSE = Tr(Sigma_p0^pop) - Tr(Cov @ Sigma_phi^{-1} @ Cov^T)
 ```
 
-### Unconditional case:
-Same formulas with `Gamma = 0`, `C_xU = None`, `mu_U = None`.
-Reduces to:  `m_j = theta_j^T mu_x0`,  `S_j^2 = theta_j^T Sigma_p0 theta_j + sigma^2 ||theta_j||^2`,  `r_ij = (theta_i^T Sigma_p0 theta_j + sigma^2 theta_i^T theta_j) / (S_i S_j)`.
+Note: this uses the **population** GMM covariance `Tr(Sigma_p0^pop)` as the baseline
+(N→∞ curve), not the empirical N_train sample covariance.
+
+### Unconditional case
+Set `Gamma = 0`: `mbar_{cj} = theta_j^T mu_c`, `Cov = sum_c w_c Sigma_c theta_j * alpha_{cj}`.
 
 ---
 
@@ -162,10 +198,22 @@ The Bayes-optimal denoiser for the infinite GMM population, computed by Monte Ca
 
 ---
 
-## Known Issues / Questions
+## Implementation Notes
 
-- **Does the jointly Gaussian approximation hold for one-hot U?** U is discrete (one-hot), so (x0, U) is NOT jointly Gaussian. The Section 3 formula is an approximation that uses only the first two moments. For large N_train this approximates the GMM Stein formula; for small N_train the empirical C_xU/Sigma_U may be poor estimates.
+- **Precompute cache:** `precompute_gmm_pop(gmm, Theta)` pre-computes `ThTh = Theta @ Theta^T`
+  and `ThSigTh_c[c] = Theta @ Sigma_c @ Theta^T` once per (gmm, Theta) pair, then reuses
+  across sigma values. This avoids redundant (k,k) matrix products (~3s saved per k-step on CPU).
 
-- **r_tilde clipping:** r_tilde is clipped to (-1+eps, 1-eps) to ensure valid Hermite expansion. Near-degenerate cases (very small S_tilde) may cause issues.
+- **CUDA dispatch:** `mmse_theory_gmm_pop_t` is a torch implementation fully vectorized over C
+  components using einsum. Called automatically when `DEVICE=cuda`.
 
-- **The Hermite series truncation at n=3** may underestimate Sigma_phi for highly nonlinear regimes (large sigma, small k).
+- **Normalization:** All empirical quantities use `/N` (not `/(N-1)`) so that the plug-in
+  estimator is consistent with the empirical distribution's MMSE.
+
+- **Hermite series truncation at n=3:** The series `sum_{n>=1} n! r^n c_n^2` converges for |r|<1
+  but diverges at r=1. Truncating at n=3 underestimates the diagonal, making Sigma_phi
+  ill-conditioned and causing the Stein MMSE to dip below the NW floor. The exact diagonal
+  formula fixes this.
+
+- **r clipping:** Within-component r_{ij,c} is clipped to (-1+1e-6, 1-1e-6) for off-diagonal
+  entries only; diagonal entries use the exact formula above.
