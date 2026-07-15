@@ -48,6 +48,45 @@ def _c3(M: np.ndarray, s: np.ndarray) -> np.ndarray:
     return -M * norm.pdf(z) / 6.0
 
 
+def _cn_hermite(M: np.ndarray, s: np.ndarray, n_max: int = 6):
+    """Compute ReLU Hermite coefficients c_n(M, s) for n = 0 .. n_max.
+
+    For relu(M + s*z) with z ~ N(0,1), using the Stein identity:
+
+      c_0 = M Phi(z) + s phi(z)
+      c_1 = s Phi(z)
+      c_n = (-1)^n s He_{n-2}(z) phi(z) / n!   for n >= 2
+
+    where z = M/s and He_k is the probabilist's Hermite polynomial with
+    recursion He_0 = 1, He_1 = z, He_n = z He_{n-1} - (n-1) He_{n-2}.
+
+    M and s may be any broadcastable numpy arrays (e.g. (C, k) for a batch
+    of components × features).  Returns a list cn of length n_max+1 where
+    each cn[n] has the same shape as M.
+    """
+    s_safe = np.maximum(s, 1e-12)
+    z      = M / s_safe
+    Phi_z  = norm.cdf(z)
+    phi_z  = norm.pdf(z)
+
+    cn = [None] * (n_max + 1)
+    cn[0] = M * Phi_z + s_safe * phi_z
+    if n_max >= 1:
+        cn[1] = s_safe * Phi_z
+    if n_max >= 2:
+        he_prev = np.ones_like(z)   # He_0
+        he_curr = z.copy()           # He_1
+        nfact = 1
+        for n in range(2, n_max + 1):
+            nfact *= n
+            sign = 1.0 if n % 2 == 0 else -1.0
+            cn[n] = sign * s_safe * he_prev * phi_z / float(nfact)
+            he_next = z * he_curr - (n - 1) * he_prev
+            he_prev = he_curr
+            he_curr = he_next
+    return cn
+
+
 # ---------------------------------------------------------------------------
 # GaussianMixture class
 # ---------------------------------------------------------------------------
@@ -453,7 +492,7 @@ def mmse_theory_gmm_pop(
     Gamma: np.ndarray,
     sigma: float,
     lam: float = 1e-4,
-    n_terms: int = 3,
+    n_max: int = 6,
     conditional: bool = True,
     _precomp: dict = None,
 ) -> float:
@@ -492,7 +531,7 @@ def mmse_theory_gmm_pop(
     Gamma      : (k, C) label projections
     sigma      : float noise level
     lam        : float ridge regularization
-    n_terms    : int   Hermite truncation order for off-diagonal (1, 2, or 3)
+    n_max      : int   Hermite truncation order for off-diagonal (default 6)
     conditional: bool  if False, ignore Gamma (unconditional denoiser)
     """
     k, d = Theta.shape
@@ -544,11 +583,9 @@ def mmse_theory_gmm_pop(
     if ThSigTh_c is None:
         ThSigTh_c = [(Theta @ gmm.covs[c]) @ Theta.T for c in range(C)]  # list of (k,k)
 
-    # Within-component: loop over C to avoid materialising (C, k, k) arrays.
-    # Each iteration holds at most ~4 × (k, k) matrices in memory (r, r^2, r^3, outer).
-    C1_c = S_c * Phi_c                              # (C, k)
-    C2_c = S_c * phi_c_ / 2.0                       # (C, k)
-    C3_c = -mbar_c * phi_c_ / 6.0                   # (C, k)
+    # Within-component: Hermite series with general n_max via recursion.
+    # cn_c[n] is (C, k): c_n coefficient for all components at once.
+    cn_c = _cn_hermite(mbar_c, S_c, n_max)   # list len n_max+1, each (C, k)
 
     diag_within  = np.zeros(k)
     between_diag = np.einsum('c,ck->k', gmm.weights, dg**2)       # (k,) already in Sigma_phi diag
@@ -557,10 +594,13 @@ def mmse_theory_gmm_pop(
         Num_cc  = ThSigTh_c[c] + sigma**2 * ThTh                      # (k, k)
         S_out   = np.maximum(np.outer(S_c[c], S_c[c]), 1e-24)
         r_cc    = np.clip(Num_cc / S_out, -1 + 1e-7, 1 - 1e-7)        # (k, k)
-        r2 = r_cc ** 2; r3 = r_cc ** 3
-        Sigma_phi += wc * (r_cc    * np.outer(C1_c[c], C1_c[c])
-                         + 2.0*r2  * np.outer(C2_c[c], C2_c[c])
-                         + 6.0*r3  * np.outer(C3_c[c], C3_c[c]))
+        # Mehler series: sum_{n=1}^{n_max} n! r^n outer(cn_i, cn_j)
+        r_pow = r_cc   # r^1
+        nfact = 1
+        for n in range(1, n_max + 1):
+            nfact *= n                                                   # n!
+            Sigma_phi += wc * float(nfact) * r_pow * np.outer(cn_c[n][c], cn_c[n][c])
+            r_pow = r_pow * r_cc                                         # r^{n+1}
         # Exact diagonal contribution from component c
         E_phi_sq_c = ((mbar_c[c]**2 + S_c[c]**2) * Phi_c[c]
                       + mbar_c[c] * S_c[c] * phi_c_[c])              # (k,)

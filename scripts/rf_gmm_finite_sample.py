@@ -208,7 +208,7 @@ def main():
             emp_base[sigma] = b
 
         # per-(sigma) result arrays over k
-        keys = ['gmm_pop_u', 'gmm_pop_c', 'jg_finiteN_u', 'jg_finiteN_c',
+        keys = ['gmm_pop_u', 'gmm_pop_c',
                 'stein_u', 'stein_c',
                 'rf_analytic_u', 'rf_analytic_c',      # preferred: stable analytic-eval
                 'rf_optridge_u', 'rf_optridge_c']      # kept: pure-MC opt-λ (double-MC, wobbly)
@@ -231,10 +231,6 @@ def main():
                 # --- GMM per-component population theory (correct, N→∞ limit) ---
                 res[sigma]['gmm_pop_u'].append(_gmm_pop(gmm, Theta, Zg, sigma, False, gmm_precomp))
                 res[sigma]['gmm_pop_c'].append(_gmm_pop(gmm, Theta, Gamma, sigma, True, gmm_precomp))
-                # --- JG theory: empirical moments (finite-N) ---
-                res[sigma]['jg_finiteN_u'].append(_jg(Sig_p0_emp, mu_x0, Theta, Zg, sigma, None, None, None))
-                res[sigma]['jg_finiteN_c'].append(_jg(Sig_p0_emp, mu_x0, Theta, Gamma, sigma,
-                                                      C_xU_emp, Sig_U_emp, mu_U))
                 # --- Stein (non-Gaussian, empirical) ---
                 res[sigma]['stein_u'].append(_stein(x0_tr, U_tr, Theta, Gamma, sigma, False))
                 res[sigma]['stein_c'].append(_stein(x0_tr, U_tr, Theta, Gamma, sigma, True))
@@ -300,7 +296,7 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
     fig.suptitle(
         f'RF Denoiser — finite dataset N_train={N_train}{tag}\n'
         f'd={D}, C={N_CLASSES}, Tr(Σ_emp)={trace_p0_emp:.3f}   '
-        f'[GMM pop = per-component Stein/Hermite, N→∞; JG fin-N = JG approx, emp moments]', fontsize=10)
+        f'[GMM pop = per-component Stein/Hermite, N→∞; Stein = non-Gaussian emp moments]', fontsize=10)
 
     # per row: (title, u/c, NW-Bayes key, pop-Wiener key, EMPIRICAL-linear-Wiener key)
     # The linear baseline is row-matched: uncond -> unconditional Wiener;
@@ -336,7 +332,6 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
 
             # theory curves (k-dependent)
             ax.plot(kd, R[f'gmm_pop_{uc}'],    color='crimson',  lw=2,   ls='--', label='GMM theory (per-comp, N→∞)')
-            ax.plot(kd, R[f'jg_finiteN_{uc}'], color='purple',   lw=1.8, ls='-',  label='JG approx (emp moments, finite-N)')
             ax.plot(kd, R[f'stein_{uc}'],      color='teal',     lw=1.8, ls='-.', label='Stein (non-Gaussian, emp)')
 
             # RF empirical (PREFERRED, headline): stable analytic-eval estimate

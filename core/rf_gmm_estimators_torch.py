@@ -205,7 +205,7 @@ def mmse_theory_joint_gaussian_t(Sigma_p0, mu_x0, Theta, Gamma, sigma,
 # Correct per-component GMM population theory (replaces JG for population curve)
 # ---------------------------------------------------------------------------
 
-def mmse_theory_gmm_pop_t(gmm, Theta, Gamma, sigma, lam=1e-4, n_terms=3,
+def mmse_theory_gmm_pop_t(gmm, Theta, Gamma, sigma, lam=1e-4, n_max=6,
                            conditional=True, device='cuda', dtype=torch.float64):
     """
     GPU port of core.gmm.mmse_theory_gmm_pop. Fully vectorized over C components.
@@ -266,16 +266,30 @@ def mmse_theory_gmm_pop_t(gmm, Theta, Gamma, sigma, lam=1e-4, n_terms=3,
     S_outer = torch.clamp(S_c[:, :, None] * S_c[:, None, :], min=1e-24)   # (C, k, k)
     r_c = torch.clamp(Num_c / S_outer, -1 + 1e-7, 1 - 1e-7)               # (C, k, k)
 
-    C1_c = S_c * Phi_c                                   # (C, k)
-    C2_c = S_c * phi_c / 2.0                             # (C, k)
-    C3_c = -mbar * phi_c / 6.0                           # (C, k) c3 = -m phi/6
+    # Hermite coefficients cn[n] for n=1..n_max, each (C, k).
+    # c_n = (-1)^n s He_{n-2}(z) phi(z) / n! for n>=2; c_1 = s Phi(z).
+    # He recursion: He_0=1, He_1=z, He_n = z He_{n-1} - (n-1) He_{n-2}.
+    cn = [None] * (n_max + 1)
+    cn[1] = S_c * Phi_c                           # (C, k)
+    if n_max >= 2:
+        he_prev = torch.ones_like(z_c)            # He_0: (C, k)
+        he_curr = z_c.clone()                     # He_1: (C, k)
+        nfact_pre = 1
+        for n in range(2, n_max + 1):
+            nfact_pre *= n
+            sign = 1.0 if n % 2 == 0 else -1.0
+            cn[n] = sign * S_c * he_prev * phi_c / float(nfact_pre)
+            he_next = z_c * he_curr - (n - 1) * he_prev
+            he_prev = he_curr
+            he_curr = he_next
 
-    # Batched Hermite: sum_c wc * r_c^n * outer(Cn_c, Cn_c)
-    # einsum 'c,cij,ci,cj->ij' = wc * r_c_ij * C1_ci * C1_cj summed over c
-    Sigma_phi += torch.einsum('c,cij,ci,cj->ij', weights, r_c,    C1_c, C1_c)
-    Sigma_phi += torch.einsum('c,cij,ci,cj->ij', weights, r_c**2, C2_c, C2_c) * 2.0
-    if n_terms >= 3:
-        Sigma_phi += torch.einsum('c,cij,ci,cj->ij', weights, r_c**3, C3_c, C3_c) * 6.0
+    # Mehler series: sum_{n=1}^{n_max} n! r_c^n outer(cn_i, cn_j), batched over C
+    r_pow = r_c   # (C, k, k), starts at r^1
+    nfact = 1
+    for n in range(1, n_max + 1):
+        nfact *= n
+        Sigma_phi += float(nfact) * torch.einsum('c,cij,ci,cj->ij', weights, r_pow, cn[n], cn[n])
+        r_pow = r_pow * r_c   # r^{n+1}
 
     # Exact diagonal: Var[phi_j|c] = E[relu^2] - c0^2, averaged over components
     E_phi_sq = (mbar**2 + S_c**2) * Phi_c + mbar * S_c * phi_c   # (C, k)
