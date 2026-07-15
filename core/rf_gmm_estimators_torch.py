@@ -74,7 +74,9 @@ def stein_covariances_t(x0, U, Theta, Gamma, sigma, lam, conditional,
                  + 2.0 * rho ** 2 * (C2.T @ C2 / N)
                  + 6.0 * rho ** 3 * (C3.T @ C3 / N))
     Sig = Sig_data + Sig_noise + lam * torch.eye(k, device=device, dtype=dtype)
-    trace_p0 = float((X0_c ** 2).sum() / max(N - 1, 1))
+    # /N to match Cov / Sig normalization (see core.rf_gmm_estimators.stein_covariances);
+    # /(N-1) here injects a spurious ~Tr(Σp0)/N offset, catastrophic at small N + low σ.
+    trace_p0 = float((X0_c ** 2).sum() / max(N, 1))
     return Cov, Sig, trace_p0
 
 

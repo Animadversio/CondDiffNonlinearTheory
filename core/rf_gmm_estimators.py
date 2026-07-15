@@ -109,7 +109,7 @@ def wiener_emp(x0, sigma):
     """Unconditional linear Wiener MMSE from empirical Sigma_p0: sum_i s^2 l_i/(l_i+s^2)."""
     N = x0.shape[0]
     Xc = x0 - x0.mean(0)
-    ev = np.linalg.eigvalsh(Xc.T @ Xc / max(N - 1, 1))
+    ev = np.linalg.eigvalsh(Xc.T @ Xc / max(N, 1))   # /N (empirical-distribution convention)
     ev = np.maximum(ev, 0.0)
     return float((sigma ** 2 * ev / (ev + sigma ** 2)).sum())
 
@@ -131,7 +131,7 @@ def wiener_cond_emp(x0, labels, sigma):
         if Nc < 2:
             continue  # a single (or no) point has no within-class variance -> 0 loss
         Xcc = Xc - Xc.mean(0)
-        ev = np.linalg.eigvalsh(Xcc @ Xcc.T / (Nc - 1))   # Gram -> nonzero eigenvalues
+        ev = np.linalg.eigvalsh(Xcc @ Xcc.T / Nc)   # Gram -> nonzero eig; /Nc (empirical-dist)
         ev = np.maximum(ev, 0.0)
         total += (Nc / N) * float((sigma ** 2 * ev / (ev + sigma ** 2)).sum())
     return float(total)
@@ -300,7 +300,12 @@ def stein_covariances(x0, U, Theta, Gamma, sigma, lam, conditional=True):
                  + 2.0 * rho ** 2 * (C2.T @ C2 / N)
                  + 6.0 * rho ** 3 * (C3.T @ C3 / N))
     Sig = Sig_data + Sig_noise + lam * np.eye(k)
-    trace_p0 = float(np.sum(X0_c ** 2) / max(N - 1, 1))
+    # trace_p0 MUST use the same normalization as Cov / Sig (both /N above). Using
+    # /(N-1) here injects a spurious ~Tr(Σp0)/N offset into the MMSE that is
+    # σ-independent and dominates at small N + low σ (it made this estimator report
+    # ~0.55 instead of the true ~0.035 at N=16, σ=0.2). Population (/N) is correct
+    # for the empirical-distribution MMSE (uniform weight over the N atoms).
+    trace_p0 = float(np.sum(X0_c ** 2) / max(N, 1))
     return Cov, Sig, trace_p0
 
 
@@ -308,6 +313,13 @@ def stein_finiteN_mmse(x0, U, Theta, Gamma, sigma, lam, conditional=True):
     """
     RF-linear MMSE for the empirical distribution (analytic; non-Gaussian).
     L = Tr(Σ_p0) - Tr(Cov Σ_φ^{-1} Cov^T).  Exact up to Hermite truncation.
+
+    WARNING — reliable only when Σ_φ is well-conditioned. When Σ_φ is ill-conditioned
+    (small N / low σ / conditional), this collapsed ridgeless form over-credits explained
+    variance from noisily-estimated tiny eigenvalues and UNDER-estimates the MMSE — it can
+    dip below the achievable Bayes (NW) floor, which is impossible for a real denoiser.
+    Prefer rf_fit_analytic_risk (a bounded fitted head; matches brute-force MC and respects
+    the floor). See docs/rf_stein_lowsigma_divergence.md.
     """
     Cov, Sig, trace_p0 = stein_covariances(x0, U, Theta, Gamma, sigma, lam, conditional)
     try:

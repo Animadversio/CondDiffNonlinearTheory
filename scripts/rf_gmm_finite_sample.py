@@ -174,9 +174,12 @@ def main():
         rng = np.random.default_rng(SEED + N_train)
         x0_tr, labels_tr, U_tr = gmm.sample(N_train, rng=rng)
 
-        # Empirical moments (for jg_finiteN and baselines)
+        # Empirical moments (for jg_finiteN and baselines). /N (empirical-distribution
+        # convention) so these are consistent with the /N feature covariances in
+        # stein / wiener / analytic — mixing /(N-1) here injects a spurious ~Tr(Σp0)/N
+        # offset into the MMSE (catastrophic at small N + low σ).
         mu_x0 = x0_tr.mean(0); mu_U = U_tr.mean(0)
-        den = max(N_train - 1, 1)
+        den = max(N_train, 1)
         X0_c = x0_tr - mu_x0; U_c = U_tr - mu_U
         Sig_p0_emp = X0_c.T @ X0_c / den
         C_xU_emp   = X0_c.T @ U_c / den
