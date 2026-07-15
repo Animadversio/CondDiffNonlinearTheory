@@ -85,6 +85,17 @@ class GaussianMixture:
         # Per-class eigenvalues (for analytic conditional Wiener)
         self._eigvals = [np.linalg.eigvalsh(S) for S in self.covs]  # each (d,)
 
+        # Population moments for jointly-Gaussian (x0, U) theory — Section 3
+        # mu_U = E[U] = class weights
+        self.mu_U = self.weights.copy()                # (C,)
+        # Sigma_U = Cov(U, U) = diag(w) - w w^T  (multinomial covariance)
+        self.Sigma_U = np.diag(self.weights) - np.outer(self.weights, self.weights)  # (C, C)
+        # C_xU = Cov(x0, U) = sum_c w_c (mu_c - mu) (e_c - w)^T
+        self.C_xU = sum(
+            w * np.outer(m - self.mu, np.eye(self.C)[c] - self.weights)
+            for c, (w, m) in enumerate(zip(self.weights, self.means))
+        )  # (d, C)
+
     # ------------------------------------------------------------------
     # Sampling
     # ------------------------------------------------------------------
@@ -299,3 +310,119 @@ class GaussianMixture:
             Sig_noise += 6.0 * rho**3 * (C3.T @ C3 / N)
 
         return Sig_noise  # (k, k)
+
+
+# ---------------------------------------------------------------------------
+# Jointly Gaussian (x0, U) theory — Section 3 of docs/newfile2_article.pdf
+# ---------------------------------------------------------------------------
+
+def mmse_theory_joint_gaussian(
+    Sigma_p0: np.ndarray,
+    mu_x0: np.ndarray,
+    Theta: np.ndarray,
+    Gamma: np.ndarray,
+    sigma: float,
+    C_xU: Optional[np.ndarray] = None,
+    Sigma_U: Optional[np.ndarray] = None,
+    mu_U: Optional[np.ndarray] = None,
+    lam: float = 1e-4,
+    n_terms: int = 3,
+) -> float:
+    """
+    RF theory MMSE using the jointly Gaussian (x0, U) formulas from Section 3
+    of docs/newfile2_article.pdf.  Only requires second-order statistics;
+    no knowledge of individual GMM components is needed.
+
+    For each feature j (theta_j, gamma_j):
+      m̃_j  = theta_j^T mu_x0 + gamma_j^T mu_U
+      S̃_j² = theta_j^T Σ_p0 theta_j + 2 theta_j^T C_xU gamma_j
+              + gamma_j^T Σ_U gamma_j + σ² ||theta_j||²
+      α_j   = c1(m̃_j, S̃_j) / S̃_j
+
+    Cov(x0, φ^U)_j = (Σ_p0 theta_j + C_xU gamma_j) · α_j       — (d, k)
+
+    r̃_ij = [theta_i^T Σ_p0 theta_j + theta_i^T C_xU gamma_j
+             + gamma_i^T C_Ux theta_j + gamma_i^T Σ_U gamma_j
+             + σ² theta_i^T theta_j] / (S̃_i S̃_j)
+
+    Σ^U_{φ,ij} = Σ_{n=1}^{n_terms} n! r̃_ij^n c_n(m̃_i, S̃_i) c_n(m̃_j, S̃_j)
+
+    MMSE = Tr(Σ_p0) - Tr(Cov(x0,φ^U) [Σ^U_φ + λI]^{-1} Cov(x0,φ^U)^T)
+
+    For the unconditional case, pass Gamma=zeros (or C_xU=None).
+
+    Parameters
+    ----------
+    Sigma_p0 : (d, d)  data covariance
+    mu_x0    : (d,)    data mean
+    Theta    : (k, d)  random projections
+    Gamma    : (k, C)  label projections (pass zeros for unconditional)
+    sigma    : float   noise level
+    C_xU     : (d, C)  cross-covariance E[(x0-mu)(U-mu_U)^T], or None
+    Sigma_U  : (C, C)  covariance of U, or None
+    mu_U     : (C,)    mean of U, or None
+    lam      : float   ridge regularisation
+    n_terms  : int     Hermite truncation (1, 2, or 3)
+
+    Returns
+    -------
+    float  MMSE value
+    """
+    k = Theta.shape[0]
+    trace_p0 = float(np.trace(Sigma_p0))
+    conditional = (C_xU is not None) and (Gamma is not None) and (mu_U is not None)
+
+    # --- Pre-activation means m̃_j ---
+    M_tilde = Theta @ mu_x0                           # (k,)
+    if conditional:
+        M_tilde = M_tilde + Gamma @ mu_U              # (k,)
+
+    # --- Pre-activation total variances S̃_j² ---
+    theta_norms_sq = np.sum(Theta ** 2, axis=1)       # (k,)
+    ThSigTh = np.einsum('ki,ij,kj->k', Theta, Sigma_p0, Theta)  # (k,)
+    S_sq = ThSigTh + sigma ** 2 * theta_norms_sq      # (k,)
+    if conditional:
+        ThCG = np.einsum('ki,ij,kj->k', Theta, C_xU, Gamma)    # (k,) diag(Θ C_xU Γ^T)
+        GaSuG = np.einsum('ki,ij,kj->k', Gamma, Sigma_U, Gamma)  # (k,)
+        S_sq = S_sq + 2.0 * ThCG + GaSuG
+    S_tilde = np.sqrt(np.maximum(S_sq, 1e-24))        # (k,)
+
+    # --- α_j = c1(m̃_j, S̃_j) / S̃_j ---
+    alpha = _c1(M_tilde, S_tilde) / np.maximum(S_tilde, 1e-12)  # (k,)
+
+    # --- Cov(x0, φ^U) = (Σ_p0 Θ^T + C_xU Γ^T) diag(α)  — (d, k) ---
+    Cov = Sigma_p0 @ Theta.T                          # (d, k)
+    if conditional:
+        Cov = Cov + C_xU @ Gamma.T                    # (d, k)
+    Cov = Cov * alpha[None, :]                        # broadcast α over rows
+
+    # --- Joint correlation r̃_ij ---
+    Num = Theta @ Sigma_p0 @ Theta.T + sigma ** 2 * (Theta @ Theta.T)  # (k, k)
+    if conditional:
+        ThCGam = Theta @ C_xU @ Gamma.T               # (k, k)
+        Num = Num + ThCGam + ThCGam.T + Gamma @ Sigma_U @ Gamma.T
+    r_tilde = Num / np.outer(
+        np.maximum(S_tilde, 1e-12),
+        np.maximum(S_tilde, 1e-12),
+    )
+    r_tilde = np.clip(r_tilde, -1 + 1e-6, 1 - 1e-6)
+
+    # --- Σ^U_{φ,ij} = Σ_{n≥1} n! r̃^n ⊙ outer(c_n_i, c_n_j) ---
+    C1 = _c1(M_tilde, S_tilde)   # (k,)
+    C2 = _c2(M_tilde, S_tilde)   # (k,)
+    Sigma_phi = (1.0 * r_tilde        * np.outer(C1, C1)
+               + 2.0 * r_tilde ** 2   * np.outer(C2, C2))
+    if n_terms >= 3:
+        C3 = _c3(M_tilde, S_tilde)   # (k,)
+        Sigma_phi = Sigma_phi + 6.0 * r_tilde ** 3 * np.outer(C3, C3)
+    Sigma_phi = Sigma_phi + lam * np.eye(k)
+
+    # --- MMSE = Tr(Σ_p0) - Tr(Cov Σ_φ^{-1} Cov^T) ---
+    try:
+        A = np.linalg.solve(Sigma_phi, Cov.T)         # (k, d)
+        explained = float(np.trace(Cov @ A))
+    except np.linalg.LinAlgError:
+        A = np.linalg.lstsq(Sigma_phi, Cov.T, rcond=None)[0]
+        explained = float(np.trace(Cov @ A))
+
+    return max(0.0, trace_p0 - explained)

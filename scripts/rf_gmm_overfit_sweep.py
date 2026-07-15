@@ -35,7 +35,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import norm as scipy_norm
 from tqdm import tqdm
 
-from core.gmm import GaussianMixture, _c0
+from core.gmm import GaussianMixture, _c0, mmse_theory_joint_gaussian
 
 # ---------------------------------------------------------------------------
 # Config
@@ -46,7 +46,7 @@ N_CLASSES = 3
 WEIGHTS   = [0.5, 0.3, 0.2]
 
 SEED    = 42
-N_NOISE = int(os.environ.get('N_NOISE', '5'))
+N_NOISE = int(os.environ.get('N_NOISE', '20'))   # increased for stability
 LAM     = float(os.environ.get('LAM',   '1e-4'))
 K_MAX   = int(os.environ.get('K_MAX',  '4096'))
 
@@ -61,7 +61,7 @@ SIGMA_VALUES = [float(s) for s in
 
 # Nadaraya-Watson is O(N^2) — only feasible for small N
 NW_MAX_N    = int(os.environ.get('NW_MAX_N',    '2000'))
-N_NOISE_NW  = int(os.environ.get('N_NOISE_NW',  '20'))
+N_NOISE_NW  = int(os.environ.get('N_NOISE_NW',  '100'))  # more draws for reliable NW estimate
 N_MC_EXACT  = int(os.environ.get('N_MC_EXACT',  '200000'))
 
 
@@ -314,36 +314,58 @@ def main():
         # ---- Per-k results ----
         results = {sg: {key: [] for key in [
             'rf_direct_uncond', 'rf_direct_cond',
-            'rf_theory_uncond', 'rf_theory_cond',
+            'rf_theory_pop_uncond', 'rf_theory_pop_cond',
+            'rf_theory_emp_uncond', 'rf_theory_emp_cond',
         ]} for sg in SIGMA_VALUES}
+
+        # Population JG theory moments (analytical, from GMM — same for all N_train)
+        # These don't change in the k loop, precompute here.
+        trace_p0_pop = float(np.trace(gmm.Sigma))
 
         for k in tqdm(K_GRID, desc=f'k (N={N_train})'):
             Theta = Theta_cache[k]
             Gamma = Gamma_cache[k]
 
+            # n_noise adaptive: use more draws for tiny N_train to reduce variance
+            n_noise_eff = max(N_NOISE, min(200, (200 * N_NOISE) // max(N_train, 1)))
+
             for sigma in SIGMA_VALUES:
-                # RF direct regression (the "computation")
+                # RF direct regression (actual W* fit → eval on fresh noise)
                 rng_dir = np.random.default_rng(SEED + N_train + k + int(sigma * 1000))
                 rf_u_dir = direct_rf_mmse(x0_train, U_train, Theta, Gamma, sigma,
-                                          LAM, N_NOISE, rng_dir, conditional=False)
+                                          LAM, n_noise_eff, rng_dir, conditional=False)
                 rng_dir2 = np.random.default_rng(SEED + N_train + k + int(sigma * 1000) + 1)
                 rf_c_dir = direct_rf_mmse(x0_train, U_train, Theta, Gamma, sigma,
-                                          LAM, N_NOISE, rng_dir2, conditional=True)
+                                          LAM, n_noise_eff, rng_dir2, conditional=True)
                 results[sigma]['rf_direct_uncond'].append(rf_u_dir)
                 results[sigma]['rf_direct_cond'].append(rf_c_dir)
 
-                # RF theory (empirical Stein)
-                rf_u_th = mmse_theory_emp(x0_train, U_train, mu_emp, Theta, Gamma,
-                                          trace_p0_emp, sigma, LAM, conditional=False)
-                rf_c_th = mmse_theory_emp(x0_train, U_train, mu_emp, Theta, Gamma,
-                                          trace_p0_emp, sigma, LAM, conditional=True)
-                results[sigma]['rf_theory_uncond'].append(rf_u_th)
-                results[sigma]['rf_theory_cond'].append(rf_c_th)
+                # RF theory — population JG (Section 3 formula with exact GMM moments)
+                # Uses gmm.Sigma, gmm.mu, gmm.C_xU, gmm.Sigma_U, gmm.mu_U (analytical)
+                rf_u_pop = mmse_theory_joint_gaussian(
+                    gmm.Sigma, gmm.mu, Theta, np.zeros_like(Gamma), sigma,
+                    C_xU=None, Sigma_U=None, mu_U=None, lam=LAM,
+                )
+                rf_c_pop = mmse_theory_joint_gaussian(
+                    gmm.Sigma, gmm.mu, Theta, Gamma, sigma,
+                    C_xU=gmm.C_xU, Sigma_U=gmm.Sigma_U, mu_U=gmm.mu_U, lam=LAM,
+                )
+                results[sigma]['rf_theory_pop_uncond'].append(rf_u_pop)
+                results[sigma]['rf_theory_pop_cond'].append(rf_c_pop)
+
+                # RF theory — empirical Stein (using training data statistics, for comparison)
+                rf_u_emp = mmse_theory_emp(x0_train, U_train, mu_emp, Theta, Gamma,
+                                           trace_p0_emp, sigma, LAM, conditional=False)
+                rf_c_emp = mmse_theory_emp(x0_train, U_train, mu_emp, Theta, Gamma,
+                                           trace_p0_emp, sigma, LAM, conditional=True)
+                results[sigma]['rf_theory_emp_uncond'].append(rf_u_emp)
+                results[sigma]['rf_theory_emp_cond'].append(rf_c_emp)
 
         all_results[N_train] = {
             'results':       results,
             'emp_baselines': emp_baselines,
             'trace_p0_emp':  trace_p0_emp,
+            'trace_p0_pop':  trace_p0_pop,
         }
 
         # Save intermediate figure
@@ -359,6 +381,7 @@ def main():
     }
     for N_train, d in all_results.items():
         save_dict[f'trace_p0_emp_N{N_train}'] = d['trace_p0_emp']
+        save_dict[f'trace_p0_pop'] = d['trace_p0_pop']
         for sg in SIGMA_VALUES:
             for key, vals in d['results'][sg].items():
                 save_dict[f'{key}_N{N_train}_s{sg}'] = np.array(vals)
@@ -419,11 +442,17 @@ def plot_one(N_train, results, emp_baselines, pop_baselines, trace_p0_emp,
 
             # --- RF direct regression (blue, solid) ---
             ax.plot(k_over_d, results[sigma][direct_key], color='steelblue', lw=2,
-                    ls='-', label='RF empirical (direct)')
+                    ls='-', marker='o', ms=3, label='RF empirical (direct)')
 
-            # --- RF theory empirical-Stein (red, dashed) ---
-            ax.plot(k_over_d, results[sigma][theory_key], color='crimson', lw=1.5,
-                    ls='--', label='RF theory (emp-Stein)')
+            # --- RF theory population JG — Section 3, GMM analytical moments (red, solid) ---
+            pop_key = direct_key.replace('rf_direct', 'rf_theory_pop')
+            ax.plot(k_over_d, results[sigma][pop_key], color='crimson', lw=2,
+                    ls='--', label='RF theory (pop. JG, Sec 3)')
+
+            # --- RF theory empirical Stein (orange, dash-dot, for comparison) ---
+            emp_key = direct_key.replace('rf_direct', 'rf_theory_emp')
+            ax.plot(k_over_d, results[sigma][emp_key], color='darkorange', lw=1.5,
+                    ls='-.', label='RF theory (emp-Stein)')
 
             ax.set_xscale('log')
             ax.set_xlabel('k / d')
