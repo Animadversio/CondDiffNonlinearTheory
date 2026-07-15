@@ -46,7 +46,7 @@ import matplotlib; matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-from core.gmm import GaussianMixture, mmse_theory_joint_gaussian
+from core.gmm import GaussianMixture, mmse_theory_joint_gaussian, mmse_theory_gmm_pop, precompute_gmm_pop
 from core.rf_gmm_estimators import (
     mmse_nw, mmse_nw_cond, wiener_emp, wiener_cond_emp,
     rf_optridge_mmse, rf_fit_analytic_risk, rf_fixedridge_mmse, stein_finiteN_mmse,
@@ -85,8 +85,11 @@ DEVICE = os.environ.get('DEVICE', 'cpu')
 if DEVICE == 'cuda':
     import torch
     from core.rf_gmm_estimators_torch import (
-        stein_finiteN_mmse_t, rf_fit_analytic_risk_t, mmse_theory_joint_gaussian_t)
+        stein_finiteN_mmse_t, rf_fit_analytic_risk_t, mmse_theory_joint_gaussian_t,
+        mmse_theory_gmm_pop_t)
     _DT = torch.float32 if os.environ.get('TORCH_DTYPE', 'float64') == 'float32' else torch.float64
+    def _gmm_pop(gmm, Th, Ga, s, cond, precomp=None):   # precomp ignored on CUDA (computed in torch)
+        return mmse_theory_gmm_pop_t(gmm, Th, Ga, s, lam=LAM, conditional=cond, device='cuda', dtype=_DT)
     def _jg(Sig, mu, Th, Ga, s, CxU, SU, muU):
         return mmse_theory_joint_gaussian_t(Sig, mu, Th, Ga, s, C_xU=CxU, Sigma_U=SU, mu_U=muU,
                                             lam=LAM, device='cuda', dtype=_DT)
@@ -96,6 +99,8 @@ if DEVICE == 'cuda':
         return rf_fit_analytic_risk_t(x0, U, Th, Ga, s, nf, conditional=cond, lam_eval=LAM,
                                       n_reps=2, device='cuda', dtype=_DT, seed=seed)[0]
 else:
+    def _gmm_pop(gmm, Th, Ga, s, cond, precomp=None):
+        return mmse_theory_gmm_pop(gmm, Th, Ga, s, lam=LAM, conditional=cond, _precomp=precomp)
     def _jg(Sig, mu, Th, Ga, s, CxU, SU, muU):
         return mmse_theory_joint_gaussian(Sig, mu, Th, Ga, s, C_xU=CxU, Sigma_U=SU, mu_U=muU, lam=LAM)
     def _stein(x0, U, Th, Ga, s, cond):
@@ -201,7 +206,7 @@ def main():
             emp_base[sigma] = b
 
         # per-(sigma) result arrays over k
-        keys = ['jg_pop_u', 'jg_pop_c', 'jg_finiteN_u', 'jg_finiteN_c',
+        keys = ['gmm_pop_u', 'gmm_pop_c', 'jg_finiteN_u', 'jg_finiteN_c',
                 'stein_u', 'stein_c',
                 'rf_analytic_u', 'rf_analytic_c',      # preferred: stable analytic-eval
                 'rf_optridge_u', 'rf_optridge_c']      # kept: pure-MC opt-λ (double-MC, wobbly)
@@ -216,12 +221,14 @@ def main():
         for k in tqdm(K_GRID, desc=f'k (N={N_train})'):
             Theta, Gamma = Theta_cache[k], Gamma_cache[k]
             Zg = np.zeros_like(Gamma)
+            # Precompute sigma-independent (k,k) matrices for gmm_pop (CPU path only;
+            # CUDA path recomputes in torch but that's fast on GPU).
+            gmm_precomp = precompute_gmm_pop(gmm, Theta) if DEVICE == 'cpu' else None
             for sigma in SIGMA_VALUES:
                 base_seed = SEED + N_train + k + int(sigma * 1000)
-                # --- JG theory: population moments (inf-N limit) ---
-                res[sigma]['jg_pop_u'].append(_jg(gmm.Sigma, gmm.mu, Theta, Zg, sigma, None, None, None))
-                res[sigma]['jg_pop_c'].append(_jg(gmm.Sigma, gmm.mu, Theta, Gamma, sigma,
-                                                  gmm.C_xU, gmm.Sigma_U, gmm.mu_U))
+                # --- GMM per-component population theory (correct, N→∞ limit) ---
+                res[sigma]['gmm_pop_u'].append(_gmm_pop(gmm, Theta, Zg, sigma, False, gmm_precomp))
+                res[sigma]['gmm_pop_c'].append(_gmm_pop(gmm, Theta, Gamma, sigma, True, gmm_precomp))
                 # --- JG theory: empirical moments (finite-N) ---
                 res[sigma]['jg_finiteN_u'].append(_jg(Sig_p0_emp, mu_x0, Theta, Zg, sigma, None, None, None))
                 res[sigma]['jg_finiteN_c'].append(_jg(Sig_p0_emp, mu_x0, Theta, Gamma, sigma,
@@ -291,7 +298,7 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
     fig.suptitle(
         f'RF Denoiser — finite dataset N_train={N_train}{tag}\n'
         f'd={D}, C={N_CLASSES}, Tr(Σ_emp)={trace_p0_emp:.3f}   '
-        f'[JG pop = N→∞ limit; JG fin-N = empirical moments]', fontsize=10)
+        f'[GMM pop = per-component Stein/Hermite, N→∞; JG fin-N = JG approx, emp moments]', fontsize=10)
 
     # per row: (title, u/c, NW-Bayes key, pop-Wiener key, EMPIRICAL-linear-Wiener key)
     # The linear baseline is row-matched: uncond -> unconditional Wiener;
@@ -326,8 +333,8 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
                            label=('NW Bayes (emp)' if r == 0 else 'NW Bayes cond (emp)'))
 
             # theory curves (k-dependent)
-            ax.plot(kd, R[f'jg_pop_{uc}'],     color='crimson',  lw=2,   ls='--', label='JG (pop moments, N→∞)')
-            ax.plot(kd, R[f'jg_finiteN_{uc}'], color='purple',   lw=1.8, ls='-',  label='JG (emp moments, finite-N)')
+            ax.plot(kd, R[f'gmm_pop_{uc}'],    color='crimson',  lw=2,   ls='--', label='GMM theory (per-comp, N→∞)')
+            ax.plot(kd, R[f'jg_finiteN_{uc}'], color='purple',   lw=1.8, ls='-',  label='JG approx (emp moments, finite-N)')
             ax.plot(kd, R[f'stein_{uc}'],      color='teal',     lw=1.8, ls='-.', label='Stein (non-Gaussian, emp)')
 
             # RF empirical (PREFERRED, headline): stable analytic-eval estimate

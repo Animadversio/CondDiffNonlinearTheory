@@ -41,9 +41,11 @@ def _c2(M: np.ndarray, s: np.ndarray) -> np.ndarray:
 
 
 def _c3(M: np.ndarray, s: np.ndarray) -> np.ndarray:
-    """c3(M, s) = M phi(z) / 6.  Derivation: E[relu(M+s*xi)He_3(xi)] = M phi(z)."""
+    """c3(M, s) = -M phi(z) / 6.  Derivation: c_n = (1/n!) E[relu(M+sz) He_n(z)];
+    for n=3, integrating by parts gives E[relu(M+sz)(z^3-3z)] = -M phi(M/s),
+    so c3 = -M phi(M/s) / 6.  Sign matters for odd cross-terms in Hermite expansions."""
     z = M / np.maximum(s, 1e-12)
-    return M * norm.pdf(z) / 6.0
+    return -M * norm.pdf(z) / 6.0
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +308,7 @@ class GaussianMixture:
         Sig_noise = rho * (C1.T @ C1 / N) + 2.0 * rho**2 * (C2.T @ C2 / N)
 
         if n_terms >= 3:
-            C3 = M * norm.pdf(z) / 6.0
+            C3 = -M * norm.pdf(z) / 6.0   # negative sign: c3 = -m phi(m/s) / 6
             Sig_noise += 6.0 * rho**3 * (C3.T @ C3 / N)
 
         return Sig_noise  # (k, k)
@@ -420,6 +422,157 @@ def mmse_theory_joint_gaussian(
     # --- MMSE = Tr(Σ_p0) - Tr(Cov Σ_φ^{-1} Cov^T) ---
     try:
         A = np.linalg.solve(Sigma_phi, Cov.T)         # (k, d)
+        explained = float(np.trace(Cov @ A))
+    except np.linalg.LinAlgError:
+        A = np.linalg.lstsq(Sigma_phi, Cov.T, rcond=None)[0]
+        explained = float(np.trace(Cov @ A))
+
+    return max(0.0, trace_p0 - explained)
+
+
+# ---------------------------------------------------------------------------
+# Correct per-component GMM population theory — replaces mmse_theory_joint_gaussian
+# ---------------------------------------------------------------------------
+
+def precompute_gmm_pop(gmm: 'GaussianMixture', Theta: np.ndarray) -> dict:
+    """
+    Precompute the sigma-independent (k,k) matrices for mmse_theory_gmm_pop.
+    Call once per (k, Theta) and reuse across all sigma values to avoid
+    recomputing the expensive Theta @ covs[c] @ Theta.T at large k.
+
+    Returns a dict to pass as _precomp=... to mmse_theory_gmm_pop.
+    """
+    ThTh = Theta @ Theta.T                                         # (k, k)
+    ThSigTh_c = [(Theta @ gmm.covs[c]) @ Theta.T for c in range(gmm.C)]
+    return {'ThTh': ThTh, 'ThSigTh_c': ThSigTh_c}
+
+
+def mmse_theory_gmm_pop(
+    gmm: 'GaussianMixture',
+    Theta: np.ndarray,
+    Gamma: np.ndarray,
+    sigma: float,
+    lam: float = 1e-4,
+    n_terms: int = 3,
+    conditional: bool = True,
+    _precomp: dict = None,
+) -> float:
+    """
+    Population RF-linear MMSE for a GMM via per-component Stein/Hermite.
+
+    CORRECT for GMM where U = e_c is CONSTANT within each component (one-hot,
+    NOT jointly Gaussian).  Replaces mmse_theory_joint_gaussian for population
+    (N→∞) theory.
+
+    Within component c, the joint pre-activation (a_i, a_j) at any two features
+    i, j is JOINTLY GAUSSIAN (x0 ~ N(mu_c, Sigma_c), z ~ N(0, sigma^2 I)):
+
+      mbar_{cj} = theta_j^T mu_c + Gamma[j,c]   (label offset fixed per class)
+      S_{cj}^2  = theta_j^T Sigma_c theta_j + sigma^2 ||theta_j||^2
+      alpha_{cj} = Phi(mbar_{cj} / S_{cj})        (Stein coefficient = c1/S)
+      c0_{cj}   = c0(mbar_{cj}, S_{cj})            (E[phi_j | component c])
+
+    Cov(x0, phi_j) = sum_c w_c [Sigma_c theta_j * alpha_{cj}
+                                 + (mu_c - mu) * c0_{cj}]           (d,)
+
+    Sigma_phi = sum_c w_c [outer(c0_c - mu_phi, c0_c - mu_phi)   ← between-component
+                           + Var_{x0~c,z}[phi | c]]              ← within-component
+
+    Within-component covariance (fully analytic):
+      r_{ij,c} = (theta_i^T Sigma_c theta_j + sigma^2 theta_i^T theta_j) / (S_{ci} S_{cj})
+      Cov[phi_i,phi_j|c] = sum_{n=1}^{n_terms} n! r_{ij,c}^n c_n(mbar_ci,S_ci) c_n(mbar_cj,S_cj)
+      Diagonal (exact, not truncated):
+        Var[phi_j|c] = E[relu^2] - c0^2
+                     = (mbar_{cj}^2 + S_{cj}^2) Phi_{cj} + mbar_{cj} S_{cj} phi_{cj} - c0_{cj}^2
+
+    Parameters
+    ----------
+    gmm        : GaussianMixture instance (weights, means, covs)
+    Theta      : (k, d) random projections
+    Gamma      : (k, C) label projections
+    sigma      : float noise level
+    lam        : float ridge regularization
+    n_terms    : int   Hermite truncation order for off-diagonal (1, 2, or 3)
+    conditional: bool  if False, ignore Gamma (unconditional denoiser)
+    """
+    k, d = Theta.shape
+    C = gmm.C
+    s  = sigma * np.linalg.norm(Theta, axis=1)   # (k,)
+    s2 = s ** 2
+
+    mu = gmm.mu                    # (d,) global mean
+    trace_p0 = float(np.trace(gmm.Sigma))
+
+    # ---- Per-component pre-computations ----
+    mbar_c  = np.zeros((C, k))   # pre-act mean per (component, feature)
+    S_c     = np.zeros((C, k))   # pre-act total std
+    Phi_c   = np.zeros((C, k))
+    phi_c_  = np.zeros((C, k))
+    c0_c    = np.zeros((C, k))   # E[phi | component c]
+
+    for c in range(C):
+        gamma_c   = Gamma[:, c] if conditional else np.zeros(k)
+        mbar_c[c] = Theta @ gmm.means[c] + gamma_c
+        v2_c      = np.einsum('ki,ij,kj->k', Theta, gmm.covs[c], Theta)
+        S_c[c]    = np.sqrt(np.maximum(v2_c + s2, 1e-24))
+        z_c       = mbar_c[c] / np.maximum(S_c[c], 1e-12)
+        Phi_c[c]  = norm.cdf(z_c)
+        phi_c_[c] = norm.pdf(z_c)
+        c0_c[c]   = mbar_c[c] * Phi_c[c] + S_c[c] * phi_c_[c]
+
+    mu_phi = (gmm.weights[:, None] * c0_c).sum(0)   # (k,) global expected activation
+
+    # ---- Cov(x0, phi) ---- (d, k)
+    Cov = np.zeros((d, k))
+    for c in range(C):
+        Sig_c_Th = gmm.covs[c] @ Theta.T                          # (d, k)
+        delta_mu = (gmm.means[c] - mu)[:, None]                   # (d, 1)
+        Cov += gmm.weights[c] * (Sig_c_Th * Phi_c[c][None, :]
+                                 + delta_mu * c0_c[c][None, :])
+
+    # ---- Sigma_phi ---- (k, k)
+    # Between-component term first (O(C*k) only)
+    dg = c0_c - mu_phi[None, :]                                    # (C, k)
+    Sigma_phi = np.einsum('c,ci,cj->ij', gmm.weights, dg, dg)     # (k, k)
+
+    # ThTh and ThSigTh_c are sigma-independent; accept precomputed versions
+    # (the driver caches them across sigma values to avoid recomputing at large k).
+    ThTh = _precomp.get('ThTh') if _precomp else None
+    ThSigTh_c = _precomp.get('ThSigTh_c') if _precomp else None
+    if ThTh is None:
+        ThTh = Theta @ Theta.T                                     # (k, k)
+    if ThSigTh_c is None:
+        ThSigTh_c = [(Theta @ gmm.covs[c]) @ Theta.T for c in range(C)]  # list of (k,k)
+
+    # Within-component: loop over C to avoid materialising (C, k, k) arrays.
+    # Each iteration holds at most ~4 × (k, k) matrices in memory (r, r^2, r^3, outer).
+    C1_c = S_c * Phi_c                              # (C, k)
+    C2_c = S_c * phi_c_ / 2.0                       # (C, k)
+    C3_c = -mbar_c * phi_c_ / 6.0                   # (C, k)
+
+    diag_within  = np.zeros(k)
+    between_diag = np.einsum('c,ck->k', gmm.weights, dg**2)       # (k,) already in Sigma_phi diag
+    for c in range(C):
+        wc = gmm.weights[c]
+        Num_cc  = ThSigTh_c[c] + sigma**2 * ThTh                      # (k, k)
+        S_out   = np.maximum(np.outer(S_c[c], S_c[c]), 1e-24)
+        r_cc    = np.clip(Num_cc / S_out, -1 + 1e-7, 1 - 1e-7)        # (k, k)
+        r2 = r_cc ** 2; r3 = r_cc ** 3
+        Sigma_phi += wc * (r_cc    * np.outer(C1_c[c], C1_c[c])
+                         + 2.0*r2  * np.outer(C2_c[c], C2_c[c])
+                         + 6.0*r3  * np.outer(C3_c[c], C3_c[c]))
+        # Exact diagonal contribution from component c
+        E_phi_sq_c = ((mbar_c[c]**2 + S_c[c]**2) * Phi_c[c]
+                      + mbar_c[c] * S_c[c] * phi_c_[c])              # (k,)
+        diag_within += wc * np.maximum(E_phi_sq_c - c0_c[c]**2, 0.0)
+
+    np.fill_diagonal(Sigma_phi, between_diag + diag_within)
+
+    Sigma_phi = Sigma_phi + lam * np.eye(k)
+
+    # ---- MMSE = Tr(Sigma_p0) - Tr(Cov Sigma_phi^{-1} Cov^T) ----
+    try:
+        A = np.linalg.solve(Sigma_phi, Cov.T)
         explained = float(np.trace(Cov @ A))
     except np.linalg.LinAlgError:
         A = np.linalg.lstsq(Sigma_phi, Cov.T, rcond=None)[0]

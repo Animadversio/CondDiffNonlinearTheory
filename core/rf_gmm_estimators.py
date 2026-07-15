@@ -290,15 +290,22 @@ def stein_covariances(x0, U, Theta, Gamma, sigma, lam, conditional=True):
     G_c = G - G.mean(0)
     Sig_data = G_c.T @ G_c / N                                     # (k, k)
 
-    C1 = s[None, :] * Phi_z
-    C2 = s[None, :] * phi_z / 2.0
-    C3 = M * phi_z / 6.0
+    C1 = s[None, :] * Phi_z                                         # (N, k)
+    C2 = s[None, :] * phi_z / 2.0                                   # (N, k)
+    C3 = -M * phi_z / 6.0                                           # (N, k) c3 = -m phi/6
     nn = np.linalg.norm(Theta, axis=1)
     Tn = Theta / nn[:, None]
-    rho = np.clip(Tn @ Tn.T, -1 + 1e-6, 1 - 1e-6)                  # (k, k)
+    rho = np.clip(Tn @ Tn.T, -1 + 1e-6, 1 - 1e-6)                  # (k, k) noise-only corr
     Sig_noise = (rho * (C1.T @ C1 / N)
                  + 2.0 * rho ** 2 * (C2.T @ C2 / N)
                  + 6.0 * rho ** 3 * (C3.T @ C3 / N))
+
+    # Exact diagonal: Var_z[phi_j|x0_n] = E[relu^2] - c0^2, averaged over N
+    # E[relu(m+sz)^2] = (m^2+s^2) Phi(m/s) + m*s*phi(m/s) — exact, replaces n<=3 truncation
+    E_phi_sq = (M ** 2 + s[None, :] ** 2) * Phi_z + M * s[None, :] * phi_z  # (N, k)
+    diag_exact = (E_phi_sq - G ** 2).mean(0)                        # (k,)
+    np.fill_diagonal(Sig_noise, diag_exact)
+
     Sig = Sig_data + Sig_noise + lam * np.eye(k)
     # trace_p0 MUST use the same normalization as Cov / Sig (both /N above). Using
     # /(N-1) here injects a spurious ~Tr(Σp0)/N offset into the MMSE that is

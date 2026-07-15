@@ -67,12 +67,16 @@ def stein_covariances_t(x0, U, Theta, Gamma, sigma, lam, conditional,
     Sig_data = G_c.T @ G_c / N
     C1 = s[None, :] * Phi_z
     C2 = s[None, :] * phi_z / 2.0
-    C3 = M * phi_z / 6.0
+    C3 = -M * phi_z / 6.0   # c3 = -m phi(m/s) / 6 (negative sign)
     nn = torch.linalg.norm(Theta, dim=1); Tn = Theta / nn[:, None]
     rho = torch.clamp(Tn @ Tn.T, -1 + 1e-6, 1 - 1e-6)
     Sig_noise = (rho * (C1.T @ C1 / N)
                  + 2.0 * rho ** 2 * (C2.T @ C2 / N)
                  + 6.0 * rho ** 3 * (C3.T @ C3 / N))
+    # Exact diagonal: Var_z[phi_j|x0_n] = E[relu^2] - c0^2, averaged over N
+    E_phi_sq = (M ** 2 + s[None, :] ** 2) * Phi_z + M * s[None, :] * phi_z
+    diag_exact = (E_phi_sq - G ** 2).mean(0)
+    Sig_noise.diagonal().copy_(diag_exact)
     Sig = Sig_data + Sig_noise + lam * torch.eye(k, device=device, dtype=dtype)
     # /N to match Cov / Sig normalization (see core.rf_gmm_estimators.stein_covariances);
     # /(N-1) here injects a spurious ~Tr(Σp0)/N offset, catastrophic at small N + low σ.
@@ -171,7 +175,7 @@ def mmse_theory_joint_gaussian_t(Sigma_p0, mu_x0, Theta, Gamma, sigma,
     def _c2(m, s):
         z = m / torch.clamp(s, min=1e-12); return s * _npdf(z) / 2.0
     def _c3(m, s):
-        z = m / torch.clamp(s, min=1e-12); return m * _npdf(z) / 6.0
+        z = m / torch.clamp(s, min=1e-12); return -m * _npdf(z) / 6.0  # c3 = -m phi/6
 
     alpha = _c1(M_tilde, S_tilde) / torch.clamp(S_tilde, min=1e-12)
     Cov = Sigma_p0 @ Theta.T
@@ -191,6 +195,99 @@ def mmse_theory_joint_gaussian_t(Sigma_p0, mu_x0, Theta, Gamma, sigma,
     if n_terms >= 3:
         C3 = _c3(M_tilde, S_tilde)
         Sigma_phi = Sigma_phi + 6.0 * r_tilde ** 3 * torch.outer(C3, C3)
+    Sigma_phi = Sigma_phi + lam * torch.eye(k, device=device, dtype=dtype)
+
+    expl = float(torch.trace(Cov @ torch.linalg.solve(Sigma_phi, Cov.T)))
+    return max(0.0, trace_p0 - expl)
+
+
+# ---------------------------------------------------------------------------
+# Correct per-component GMM population theory (replaces JG for population curve)
+# ---------------------------------------------------------------------------
+
+def mmse_theory_gmm_pop_t(gmm, Theta, Gamma, sigma, lam=1e-4, n_terms=3,
+                           conditional=True, device='cuda', dtype=torch.float64):
+    """
+    GPU port of core.gmm.mmse_theory_gmm_pop. Fully vectorized over C components.
+    See that function for math documentation.
+    """
+    Theta_t = _to(Theta, device, dtype)          # (k, d)
+    Gamma_t = _to(Gamma, device, dtype)          # (k, C)
+    k, d    = Theta_t.shape
+    C       = gmm.C
+    weights = _to(gmm.weights, device, dtype)    # (C,)
+    means   = _to(gmm.means,   device, dtype)    # (C, d)
+    covs    = _to(gmm.covs,    device, dtype)    # (C, d, d)
+    mu      = _to(gmm.mu,      device, dtype)    # (d,)
+    Sigma_t = _to(gmm.Sigma,   device, dtype)    # (d, d)
+    trace_p0 = float(torch.trace(Sigma_t))
+
+    s  = sigma * torch.linalg.norm(Theta_t, dim=1)   # (k,)
+    s2 = s ** 2
+
+    # ---- Vectorised per-component pre-computations ----
+    # gamma_c: (C, k) — Gamma[:, c] for each component c
+    gamma_c = Gamma_t.T if conditional else torch.zeros(C, k, device=device, dtype=dtype)  # (C, k)
+
+    # mbar[c, j] = theta_j^T mu_c + gamma_c[c, j]
+    mbar = means @ Theta_t.T + gamma_c         # (C, k)
+
+    # v2[c, j] = theta_j^T Sigma_c theta_j  (batch over C)
+    ThCov = torch.einsum('kd,cde->cke', Theta_t, covs)   # (C, k, d)
+    v2    = (ThCov * Theta_t[None, :, :]).sum(-1)         # (C, k)
+    S_c   = torch.sqrt(torch.clamp(v2 + s2[None, :], min=1e-24))  # (C, k)
+
+    z_c   = mbar / torch.clamp(S_c, min=1e-12)           # (C, k)
+    Phi_c = _ndtr(z_c)                                   # (C, k)
+    phi_c = _npdf(z_c)                                   # (C, k)
+    c0_c  = mbar * Phi_c + S_c * phi_c                   # (C, k)
+
+    mu_phi = (weights[:, None] * c0_c).sum(0)            # (k,)
+
+    # ---- Cov(x0, phi) ---- (d, k)
+    # sum_c wc [ Sigma_c Theta^T * Phi_c + (mu_c - mu)[:,None] * c0_c ]
+    delta_mu = means - mu[None, :]                        # (C, d)
+    # Sig_c_Th[c] = covs[c] @ Theta.T  shape (C, d, k)
+    Sig_c_Th = torch.einsum('cde,ke->cdk', covs, Theta_t)  # (C, d, k)
+    Cov = (weights[:, None, None] * (
+        Sig_c_Th * Phi_c[:, None, :]
+        + delta_mu[:, :, None] * c0_c[:, None, :]
+    )).sum(0)                                              # (d, k)
+
+    # ---- Sigma_phi ---- (k, k)
+    # Between-component: sum_c wc * outer(c0_c - mu_phi, c0_c - mu_phi)
+    dg = c0_c - mu_phi[None, :]                          # (C, k)
+    Sigma_phi = torch.einsum('c,ci,cj->ij', weights, dg, dg)   # (k, k)
+
+    # Within-component: Hermite series with r_c (data + noise), exact diagonal
+    ThTh = Theta_t @ Theta_t.T                            # (k, k)  sigma^2 noise term
+    # Num_c[c, i, j] = (ThCov[c] @ Theta_t.T)[i,j] + sigma^2 * ThTh[i,j]
+    Num_c = torch.einsum('ckd,jd->ckj', ThCov, Theta_t) + sigma**2 * ThTh[None, :, :]  # (C,k,k)
+    S_outer = torch.clamp(S_c[:, :, None] * S_c[:, None, :], min=1e-24)   # (C, k, k)
+    r_c = torch.clamp(Num_c / S_outer, -1 + 1e-7, 1 - 1e-7)               # (C, k, k)
+
+    C1_c = S_c * Phi_c                                   # (C, k)
+    C2_c = S_c * phi_c / 2.0                             # (C, k)
+    C3_c = -mbar * phi_c / 6.0                           # (C, k) c3 = -m phi/6
+
+    # Batched Hermite: sum_c wc * r_c^n * outer(Cn_c, Cn_c)
+    # einsum 'c,cij,ci,cj->ij' = wc * r_c_ij * C1_ci * C1_cj summed over c
+    Sigma_phi += torch.einsum('c,cij,ci,cj->ij', weights, r_c,    C1_c, C1_c)
+    Sigma_phi += torch.einsum('c,cij,ci,cj->ij', weights, r_c**2, C2_c, C2_c) * 2.0
+    if n_terms >= 3:
+        Sigma_phi += torch.einsum('c,cij,ci,cj->ij', weights, r_c**3, C3_c, C3_c) * 6.0
+
+    # Exact diagonal: Var[phi_j|c] = E[relu^2] - c0^2, averaged over components
+    E_phi_sq = (mbar**2 + S_c**2) * Phi_c + mbar * S_c * phi_c   # (C, k)
+    diag_var  = (E_phi_sq - c0_c**2).clamp(min=0.0)               # (C, k)
+    diag_exact = (weights[:, None] * diag_var).sum(0)             # (k,) between+within diagonal
+    # Add between-component diagonal (already in Sigma_phi from dg einsum)
+    # The diagonal of the between-component term is (weights * dg^2).sum(0)
+    # which is already included. Replace the full diagonal of Sigma_phi with:
+    # between_diag + within_diag_exact.
+    between_diag = (weights[:, None] * dg**2).sum(0)              # (k,)
+    Sigma_phi.diagonal().copy_(between_diag + diag_exact)
+
     Sigma_phi = Sigma_phi + lam * torch.eye(k, device=device, dtype=dtype)
 
     expl = float(torch.trace(Cov @ torch.linalg.solve(Sigma_phi, Cov.T)))
