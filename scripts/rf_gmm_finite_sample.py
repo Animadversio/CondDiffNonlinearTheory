@@ -361,9 +361,12 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
             # theory curves (k-dependent)
             ax.plot(kd, R[f'gmm_pop_{uc}'],    color='crimson',  lw=2,   ls='--', label='GMM theory (per-comp, N→∞)')
             ax.plot(kd, R[f'stein_{uc}'],      color='teal',     lw=1.8, ls='-.', label='RF dense (Stein, non-Gaussian)')
-            # Circulant-constrained RF (block-circulant Θ & W; only k divisible by d)
-            ax.plot(kd, R[f'circ_{uc}'],       color='darkviolet', lw=1.8, ls='-', marker='s', ms=4,
-                    label='RF circulant $\\mathcal{L}^{\\mathrm{circ}}$ (k mod d=0)')
+            # Circulant-constrained RF (block-circulant Θ & W; only k divisible by d).
+            # Curve moved to the dedicated experiment scripts/rf_circulant_win.py (where the
+            # p̄0/Δ_stat context lives). Values are still computed and stored in the npz
+            # (keys circ_u/circ_c); uncomment to overlay it here again.
+            # ax.plot(kd, R[f'circ_{uc}'],       color='darkviolet', lw=1.8, ls='-', marker='s', ms=4,
+            #         label='RF circulant $\\mathcal{L}^{\\mathrm{circ}}$ (k mod d=0)')
 
             # RF empirical (PREFERRED, headline): stable analytic-eval estimate
             ax.plot(kd, R[f'rf_analytic_{uc}'], color='steelblue', lw=2.4, marker='o', ms=4,
