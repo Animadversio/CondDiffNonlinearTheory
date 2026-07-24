@@ -51,6 +51,9 @@ from core.rf_gmm_estimators import (
     mmse_nw, mmse_nw_cond, wiener_emp, wiener_cond_emp,
     rf_optridge_mmse, rf_fit_analytic_risk, rf_fixedridge_mmse, stein_finiteN_mmse,
 )
+from core.rf_circulant import (
+    build_circulant_theta, build_circulant_gamma, circulant_rf_mmse,
+)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -87,7 +90,10 @@ if DEVICE == 'cuda':
     from core.rf_gmm_estimators_torch import (
         stein_finiteN_mmse_t, rf_fit_analytic_risk_t, mmse_theory_joint_gaussian_t,
         mmse_theory_gmm_pop_t)
+    from core.rf_circulant_torch import circulant_rf_mmse_t
     _DT = torch.float32 if os.environ.get('TORCH_DTYPE', 'float64') == 'float32' else torch.float64
+    def _circ(x0, U, Th, Ga, s, cond):
+        return circulant_rf_mmse_t(x0, U, Th, Ga, s, LAM, conditional=cond, device='cuda', dtype=_DT)
     def _gmm_pop(gmm, Th, Ga, s, cond, precomp=None):   # precomp ignored on CUDA (computed in torch)
         return mmse_theory_gmm_pop_t(gmm, Th, Ga, s, lam=LAM, conditional=cond, device='cuda', dtype=_DT)
     def _jg(Sig, mu, Th, Ga, s, CxU, SU, muU):
@@ -108,6 +114,8 @@ else:
     def _analytic(x0, U, Th, Ga, s, nf, seed, cond):
         return rf_fit_analytic_risk(x0, U, Th, Ga, s, nf, np.random.default_rng(seed),
                                     conditional=cond, lam_eval=LAM, n_reps=2)[0]
+    def _circ(x0, U, Th, Ga, s, cond):
+        return circulant_rf_mmse(x0, U, Th, Ga, s, LAM, conditional=cond)
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +173,16 @@ def main():
         Theta_cache[k] = rng_proj.standard_normal((k, D)) / np.sqrt(D)
         Gamma_cache[k] = rng_proj.standard_normal((k, N_CLASSES)) / np.sqrt(N_CLASSES)
 
+    # Block-circulant projections for the L^circ curve (newfile5.tex §3-4). Only
+    # k divisible by D (whole d×d blocks) is meaningful; smaller k -> NaN (skipped).
+    # Same marginal N(0,1/D) as dense; only the row-joint is circulant.
+    rng_circ = np.random.default_rng(SEED + 200)
+    ThetaC_cache, GammaC_cache = {}, {}
+    K_CIRC = [k for k in K_GRID if k % D == 0]
+    for k in K_CIRC:
+        ThetaC_cache[k] = build_circulant_theta(k, D, rng_circ)
+        GammaC_cache[k] = build_circulant_gamma(k, D, N_CLASSES, rng_circ)
+
     # Population baselines (N-independent reference lines)
     rng_mc = np.random.default_rng(SEED + 1)
     pop_base = {}
@@ -210,6 +228,7 @@ def main():
         # per-(sigma) result arrays over k
         keys = ['gmm_pop_u', 'gmm_pop_c',
                 'stein_u', 'stein_c',
+                'circ_u', 'circ_c',                    # circulant-constrained RF (newfile5 §3-4)
                 'rf_analytic_u', 'rf_analytic_c',      # preferred: stable analytic-eval
                 'rf_optridge_u', 'rf_optridge_c']      # kept: pure-MC opt-λ (double-MC, wobbly)
         if STUDY_FIXED_RIDGE:
@@ -234,6 +253,15 @@ def main():
                 # --- Stein (non-Gaussian, empirical) ---
                 res[sigma]['stein_u'].append(_stein(x0_tr, U_tr, Theta, Gamma, sigma, False))
                 res[sigma]['stein_c'].append(_stein(x0_tr, U_tr, Theta, Gamma, sigma, True))
+                # --- Circulant-constrained RF (block-circulant Θ and W; newfile5 §3-4) ---
+                if k % D == 0:
+                    ThC, GaC = ThetaC_cache[k], GammaC_cache[k]
+                    ZgC = np.zeros_like(GaC)
+                    res[sigma]['circ_u'].append(_circ(x0_tr, U_tr, ThC, ZgC, sigma, False))
+                    res[sigma]['circ_c'].append(_circ(x0_tr, U_tr, ThC, GaC, sigma, True))
+                else:
+                    res[sigma]['circ_u'].append(np.nan)
+                    res[sigma]['circ_c'].append(np.nan)
                 # --- RF empirical (PREFERRED): analytic-eval of the empirical fit ---
                 # Fit W_hat on stacked noisy features, evaluate its risk analytically
                 # against the Stein covariances (>= Stein, monotone, ~zero eval variance).
@@ -332,7 +360,10 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
 
             # theory curves (k-dependent)
             ax.plot(kd, R[f'gmm_pop_{uc}'],    color='crimson',  lw=2,   ls='--', label='GMM theory (per-comp, N→∞)')
-            ax.plot(kd, R[f'stein_{uc}'],      color='teal',     lw=1.8, ls='-.', label='Stein (non-Gaussian, emp)')
+            ax.plot(kd, R[f'stein_{uc}'],      color='teal',     lw=1.8, ls='-.', label='RF dense (Stein, non-Gaussian)')
+            # Circulant-constrained RF (block-circulant Θ & W; only k divisible by d)
+            ax.plot(kd, R[f'circ_{uc}'],       color='darkviolet', lw=1.8, ls='-', marker='s', ms=4,
+                    label='RF circulant $\\mathcal{L}^{\\mathrm{circ}}$ (k mod d=0)')
 
             # RF empirical (PREFERRED, headline): stable analytic-eval estimate
             ax.plot(kd, R[f'rf_analytic_{uc}'], color='steelblue', lw=2.4, marker='o', ms=4,

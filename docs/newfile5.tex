@@ -1,0 +1,488 @@
+%% LyX 2.5.1 created this file.  For more info, see https://www.lyx.org/.
+%% Do not edit unless you really know what you are doing.
+\documentclass[twoside,onecolumn,american,compsoc]{IEEEtran}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{mathtools}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\makeatletter
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Textclass specific LaTeX commands.
+\numberwithin{equation}{section}
+\numberwithin{figure}{section}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% User specified LaTeX commands.
+\usepackage[left=1.4cm, right=1.5cm, top=1.5cm, bottom=1.5cm]{geometry}
+
+\makeatother
+
+\usepackage{babel}
+\begin{document}
+
+\section{Unconditional Linear Denoiser with Circulant Matrix}
+
+A linear denoiser is $\boldsymbol{D}(\boldsymbol{y};\sigma)=\boldsymbol{W}_{\sigma}\boldsymbol{y}+\boldsymbol{b}_{\sigma}$,
+but now consider the case that $\boldsymbol{W}_{\sigma}$ is constrained
+to be circulant.
+\begin{align*}
+\mathcal{L}^{\text{circ}}_{\sigma} & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}\|\boldsymbol{W}^{\text{circ}}_{\sigma}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})+\boldsymbol{b}_{\sigma}-\boldsymbol{x_{0}}\|^{2}_{2}
+\end{align*}
+
+where $\boldsymbol{W}^{\text{circ}}_{\sigma}\in\mathbb{R}^{d\times d},\boldsymbol{x_{0}}\in\mathbb{R}^{d\times1}$.
+Diagonalize $\boldsymbol{W}^{\text{circ}}_{\sigma}\coloneqq\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}})\boldsymbol{F}$,
+where $\boldsymbol{F}$ is the unitary (across $d$) Discrete Fourier
+Transform matrix $\boldsymbol{F}$ where $\boldsymbol{F}_{jk}=\frac{1}{\sqrt{d}}e^{-2\pi ijk/d}$
+and $\boldsymbol{F}^{*}$ is the conjugate transpose where $\boldsymbol{F}^{*}_{jk}=\frac{1}{\sqrt{d}}e^{2\pi ijk/d}$,
+and $\text{diag}(\hat{\boldsymbol{W}})$ is the Discrete Fourier Transform
+of the first row of the circulant matrix $\boldsymbol{W}$, i.e. $\text{diag}(\hat{\boldsymbol{W}})_{j}\coloneqq\hat{w}_{j}=\sum^{d}_{k=0}w_{k}e^{-2\pi ijk/d}$
+($w_{k}$ is the $k$-th entry of the first row of $\boldsymbol{W}$).
+For $\boldsymbol{W}$ to have real entries, $\hat{w}_{j}=\overline{\hat{w}_{d-j}}$.
+
+Recall that the optimal $\boldsymbol{b}_{\sigma}$ is $\boldsymbol{b}^{*}_{\sigma}=(\boldsymbol{\boldsymbol{I}-W}_{\sigma})\mathbb{E}\big[\boldsymbol{x_{0}}\big]$.
+So we have:
+\[
+\mathcal{L}^{\text{circ}}_{\sigma}=\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}\|\boldsymbol{W}^{\text{circ}}_{\sigma}(\boldsymbol{x_{0}}-\mathbb{E}\big[\boldsymbol{x_{0}}\big])+\sigma\boldsymbol{Z})-(\boldsymbol{x_{0}}-\mathbb{E}\big[\boldsymbol{x_{0}}\big])\|^{2}_{2}
+\]
+
+Let $\tilde{\boldsymbol{x_{0}}}=\boldsymbol{x_{0}}-\mathbb{E}\big[\boldsymbol{x_{0}}\big]$.
+Then:
+\begin{align*}
+\mathcal{L}^{\text{circ}}_{\sigma} & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I})}\|\boldsymbol{W}^{\text{circ}}_{\sigma}(\tilde{\boldsymbol{x_{0}}}+\sigma\boldsymbol{Z})-\tilde{\boldsymbol{x_{0}}}\|^{2}_{2}\\
+ & =\text{Tr}\big(\boldsymbol{W}^{\text{circ}}_{\sigma}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}+\sigma^{2}\boldsymbol{I})\boldsymbol{W}^{\text{circ}\top}_{\sigma}-2\boldsymbol{W}^{\text{circ}}_{\sigma}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}+\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\big)
+\end{align*}
+
+Let $\boldsymbol{P}=\boldsymbol{F}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\boldsymbol{F}^{*}$,
+then $\boldsymbol{P}$ is Hermitian, and $\boldsymbol{P}_{kk}=f^{H}_{k}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}f_{k}$
+where $f_{k}$ is the $k$-th column of $\boldsymbol{F}^{*}$, or
+the conjugate of the $k$-th row of $\boldsymbol{F}$. Note that $\boldsymbol{P}_{kk}=\boldsymbol{P}_{d-k,d-k}$.
+Since $\boldsymbol{W}^{\text{circ}}_{\sigma}$ is real valued, $\boldsymbol{W}^{\text{circ}\top}_{\sigma}=\boldsymbol{W}^{\text{circ}H}_{\sigma}$
+($\boldsymbol{A}{}^{H}$ is the conjugate transpose matrix of $\boldsymbol{A}$).
+So $\boldsymbol{W}^{\text{circ}\top}_{\sigma}=(\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}})\boldsymbol{F})^{H}=\boldsymbol{F}^{H}\text{diag}(\hat{\boldsymbol{W}})^{H}(\boldsymbol{F}^{*})^{H}=\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}})^{H}\boldsymbol{F}$.
+
+Since $\boldsymbol{F}$ and $\boldsymbol{F}^{*}$ are both symmetric,
+$\boldsymbol{W}^{\text{circ}\top}_{\sigma}=\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}})^{H}\boldsymbol{F}$
+is also symmetric . Consider the first term:
+\begin{align*}
+ & \text{Tr}(\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}})\boldsymbol{F}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}+\sigma^{2}\boldsymbol{I})\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}})^{H}\boldsymbol{F})\\
+ & =\text{Tr}(\boldsymbol{F}\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}})\boldsymbol{F}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}+\sigma^{2}\boldsymbol{I})\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}})^{H})\\
+ & =\text{Tr}(\text{diag}(\hat{\boldsymbol{W}})(\boldsymbol{P}\text{+\ensuremath{\sigma^{2}\boldsymbol{I}})diag}(\hat{\boldsymbol{W}})^{H})\\
+ & =\sum^{d}_{k=1}\|\hat{w}_{k}\|^{2}(\boldsymbol{P}_{kk}+\sigma^{2})
+\end{align*}
+Consider the second term:
+\begin{align*}
+ & \text{Tr}(\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}})\boldsymbol{F}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})\\
+ & =\text{Tr}(\text{diag}(\hat{\boldsymbol{W}})\boldsymbol{F}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\boldsymbol{F}^{*})\\
+ & =\text{Tr}(\text{diag}(\hat{\boldsymbol{W}})\boldsymbol{P})=\sum^{d}_{k=1}\hat{w}_{k}\boldsymbol{P}_{kk}
+\end{align*}
+Since $\boldsymbol{P}_{kk}=\boldsymbol{P}_{d-k,d-k}$, pairing $k$
+and $d-k$ in this sum gives us: $\hat{w}_{k}\boldsymbol{P}_{kk}+\hat{w}_{d-k}\boldsymbol{P}_{d-k,d-k}=\boldsymbol{P}_{kk}(\hat{w}_{k}+\bar{\hat{w}}_{k})=\boldsymbol{P}_{kk}2\text{Re}(\hat{w}_{k})$.
+So $\text{Tr}(\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}})\boldsymbol{F}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})=\sum^{d}_{k=1}\text{Re}(\hat{w}_{k})\boldsymbol{P}_{kk}$.
+Then:
+\[
+\mathcal{L}^{\text{circ}}_{\sigma}=\sum^{d}_{k=1}(\|\hat{w}_{k}\|^{2}(\boldsymbol{P}_{kk}+\sigma^{2})-2\text{Re}(\hat{w}_{k})\boldsymbol{P}_{kk})+\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})
+\]
+Now observe that each $\hat{w}_{k}$ is independent and so we can
+optimize for each $\hat{w}_{k}$ independently. Let each $\hat{w}_{k}=a+bi$
+where $a,b\in\mathbb{R}$. Our objective is to minimize:
+\[
+\|\hat{w}_{k}\|^{2}(\boldsymbol{P}_{kk}+\sigma^{2})-2\text{Re}(\hat{w}_{k})\boldsymbol{P}_{kk}=(a^{2}+b^{2})(\boldsymbol{P}_{kk}+\sigma^{2})-2a\boldsymbol{P}_{kk}
+\]
+Note that $\boldsymbol{P}_{kk}$ is real and non-negative, so to achieve
+the minimum of $\mathcal{L}^{\text{circ}}_{\sigma}$, it ought to
+be that $b=0$ and solving for the minimum of w.r.t $a$:
+\[
+\nabla_{a}a^{2}(\boldsymbol{P}_{kk}+\sigma^{2})-2a\boldsymbol{P}_{kk}=2a(\boldsymbol{P}_{kk}+\sigma^{2})-2\boldsymbol{P}_{kk}=0
+\]
+so:
+\[
+a=\frac{\boldsymbol{P}_{kk}}{\boldsymbol{P}_{kk}+\sigma^{2}}=\hat{w}^{*}_{k}
+\]
+Therefore:
+\[
+\mathcal{L}^{\text{circ}}_{\sigma}=\sum^{d}_{k=1}\frac{-\boldsymbol{P}^{2}_{kk}}{\boldsymbol{P}_{kk}+\sigma^{2}}+\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})
+\]
+Note that $\sum^{d}_{k=1}\boldsymbol{P}_{kk}=\sum^{d}_{k=1}\text{Tr}(f^{H}_{k}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}f_{k})=\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\sum^{d}_{k=1}f_{k}f^{H}_{k})=\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\boldsymbol{F}\boldsymbol{F}^{*})=\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}\boldsymbol{I})=\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})$,
+so:
+\[
+\mathcal{L}^{\text{circ}}_{\sigma}=\sum^{d}_{k=1}\frac{-\boldsymbol{P}^{2}_{kk}}{\boldsymbol{P}_{kk}+\sigma^{2}}-\boldsymbol{P}_{kk}=\sigma^{2}\sum^{d}_{k=1}\frac{\boldsymbol{P}_{kk}}{\boldsymbol{P}_{kk}+\sigma^{2}}
+\]
+Recall that the regular optimal denoiser loss is:
+\[
+\mathcal{L}_{\sigma}=\sigma^{2}\sum^{d}_{k=1}\frac{\lambda_{k}}{\lambda_{k}+\sigma^{2}}
+\]
+where $\lambda_{k}$ is the eigenvalues of $\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}$.
+Since $\boldsymbol{F}\boldsymbol{F}^{*}=\boldsymbol{I}$, the transformation
+$\boldsymbol{P}=\boldsymbol{F}\boldsymbol{\Sigma_{x_{0}}}\boldsymbol{F}^{*}$
+preserves the eigenvalues of $\boldsymbol{\Sigma_{x_{0}}}$. By the
+Schur-Horn Theorem, for any Hermitian matrix, the vector of its true
+eigenvalues always majorizes the vector of its diagonal entries, i.e.
+$\boldsymbol{\lambda}\succ\text{diag}(\boldsymbol{P})$. Let $f(x)=\frac{x}{x+\sigma^{2}}$;
+it can be confirmed that $f(x)$ is concave since the second derivative
+$f''(x)=\frac{-2\sigma^{2}}{(x+\sigma^{2})^{3}}$ is strictly negative
+for $x\geq0$ (note that $\lambda_{k}$ and $\boldsymbol{P}_{kk}$
+are non-negative). By the Karamata's Inequality/Majorization Theorem,
+if a vector $\boldsymbol{x}$ majorizes $\boldsymbol{y}$ and $f$
+is concave, then $\sum^{d}_{k=1}f(x_{k})\leq\sum^{d}_{k=1}f(y_{k})$.
+So:
+\[
+\mathcal{L}^{\text{circ}}_{\sigma}=\sigma^{2}\sum^{d}_{k=1}\frac{\boldsymbol{P}_{kk}}{\boldsymbol{P}_{kk}+\sigma^{2}}\geq\sigma^{2}\sum^{d}_{k=1}\frac{\lambda_{k}}{\lambda_{k}+\sigma^{2}}=\mathcal{L}_{\sigma}
+\]
+Constraint for $\boldsymbol{W}_{\sigma}$ to be circulant doesn't
+buy us anything in the linear denoiser case; since circulant matrices
+is still a subset of matrices and so the optimal denoiser loss ought
+to be the lower bound for the circulant matrix denoiser loss.
+
+\section{Conditional Linear Denoiser with Circulant Matrix}
+
+Now similarly consider the conditional denoiser case, where we also
+constrain $\boldsymbol{W}_{\sigma}$ to be circulant. Recall the optimal
+$\boldsymbol{b}_{\sigma}$ is $\boldsymbol{b}^{*}_{\sigma}=(\boldsymbol{\boldsymbol{I}-W}_{\sigma})\boldsymbol{\mu_{p_{0}}}-\boldsymbol{V}_{\sigma}\boldsymbol{\mu_{U}}$
+and $\boldsymbol{V}^{*}_{\sigma}=(\boldsymbol{\boldsymbol{I}-W}_{\sigma})\text{Cov}(\boldsymbol{x_{0}},\boldsymbol{U})\boldsymbol{\Sigma}^{-1}_{\boldsymbol{U}}$
+\begin{align*}
+\mathcal{L}^{\text{circ}}_{\sigma,\boldsymbol{U}} & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I}),\boldsymbol{U}}\|\boldsymbol{W}^{\text{circ}}_{\sigma}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})+\boldsymbol{V}_{\sigma}\boldsymbol{U}+\boldsymbol{b}_{\sigma}-\boldsymbol{x_{0}}\|^{2}_{2}\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I}),\boldsymbol{U}}\|\boldsymbol{W}^{\text{circ}}_{\sigma}(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})+\boldsymbol{V}_{\sigma}\boldsymbol{U}+(\boldsymbol{\boldsymbol{I}}-\boldsymbol{W}^{\text{circ}}_{\sigma})\boldsymbol{\mu_{p_{0}}}-\boldsymbol{V}_{\sigma}\boldsymbol{\mu_{U}}-\boldsymbol{x_{0}}\|^{2}_{2}\\
+ & =\mathbb{E}_{\boldsymbol{x_{0}}\sim p_{0},\boldsymbol{Z}\sim\mathcal{N}(0,\boldsymbol{I}),\boldsymbol{U}}\|\boldsymbol{W}^{\text{circ}}_{\sigma}(\tilde{\boldsymbol{x_{0}}}+\sigma\boldsymbol{Z})-\tilde{\boldsymbol{x_{0}}}+\boldsymbol{V}_{\sigma}\tilde{\boldsymbol{U}}\|^{2}_{2}\\
+ & =\text{Tr}\big(\boldsymbol{W}^{\text{circ}}_{\sigma}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}+\sigma^{2}\boldsymbol{I})\boldsymbol{W}^{\text{circ}\top}_{\sigma}-2\boldsymbol{W}^{\text{circ}}_{\sigma}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}+\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}+\boldsymbol{V}_{\sigma}\boldsymbol{\Sigma}_{\boldsymbol{U}}\boldsymbol{V}^{\top}_{\sigma}+2\boldsymbol{V}_{\sigma}\text{Cov}(\boldsymbol{U},\boldsymbol{x_{0}})(\boldsymbol{W}^{\text{circ}}_{\sigma}-\boldsymbol{I})\big)\\
+ & =\text{Tr}\big(\boldsymbol{W}^{\text{circ}}_{\sigma}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}+\sigma^{2}\boldsymbol{I})\boldsymbol{W}^{\text{circ}\top}_{\sigma}-2\boldsymbol{W}^{\text{circ}}_{\sigma}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}+\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}-(\boldsymbol{\boldsymbol{I}-W}_{\sigma})\text{Cov}(\boldsymbol{x_{0}},\boldsymbol{U})\boldsymbol{\Sigma}^{-1}_{\boldsymbol{U}}\text{Cov}(\boldsymbol{U},\boldsymbol{x_{0}})(\boldsymbol{\boldsymbol{I}-W}_{\sigma})^{\top})\\
+ & =\text{Tr}\big(\boldsymbol{W}^{\text{circ}}_{\sigma}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}+\sigma^{2}\boldsymbol{I}-\text{Cov}(\boldsymbol{x_{0}},\boldsymbol{U})\boldsymbol{\Sigma}^{-1}_{\boldsymbol{U}}\text{Cov}(\boldsymbol{U},\boldsymbol{x_{0}}))\boldsymbol{W}^{\text{circ}\top}_{\sigma}-2\boldsymbol{W}^{\text{circ}}_{\sigma}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}-\text{Cov}(\boldsymbol{x_{0}},\boldsymbol{U})\boldsymbol{\Sigma}^{-1}_{\boldsymbol{U}}\text{Cov}(\boldsymbol{U},\boldsymbol{x_{0}}))\\
+ & +(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}-\text{Cov}(\boldsymbol{x_{0}},\boldsymbol{U})\boldsymbol{\Sigma}^{-1}_{\boldsymbol{U}}\text{Cov}(\boldsymbol{U},\boldsymbol{x_{0}}))
+\end{align*}
+Let $\boldsymbol{\Sigma}_{\text{cond}}=\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}-\text{Cov}(\boldsymbol{x_{0}},\boldsymbol{U})\boldsymbol{\Sigma}^{-1}_{\boldsymbol{U}}\text{Cov}(\boldsymbol{U},\boldsymbol{x_{0}})$,
+then:
+\begin{align*}
+\mathcal{L}^{\text{circ}}_{\sigma,\boldsymbol{U}} & =\text{Tr}\big(\boldsymbol{W}^{\text{circ}}_{\sigma}(\boldsymbol{\Sigma}_{\text{cond}}+\sigma^{2}\boldsymbol{I})\boldsymbol{W}^{\text{circ}\top}_{\sigma}-2\boldsymbol{W}^{\text{circ}}_{\sigma}\boldsymbol{\Sigma}_{\text{cond}}+\boldsymbol{\Sigma}_{\text{cond}}
+\end{align*}
+This is the same form as $\mathcal{L}^{\text{circ}}_{\sigma}$ except
+with $\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}$ swapped out for $\boldsymbol{\Sigma}_{\text{cond}}$.
+Hence we can draw the same conclusion: let $\boldsymbol{P}^{\text{cond}}=\boldsymbol{F}\boldsymbol{\Sigma}_{\text{cond}}\boldsymbol{F}^{*}$
+and as before, $\text{diag}(\hat{\boldsymbol{W}})$ is the Discrete
+Fourier Transform of the first row of the circulant matrix $\boldsymbol{W}$,
+i.e. $\text{diag}(\hat{\boldsymbol{W}})_{j}\coloneqq\hat{w}_{j}=\sum^{d}_{k=0}w_{k}e^{-2\pi ijk/d}$
+($w_{k}$ is the $k$-th entry of the first row of $\boldsymbol{W}$).
+For $\boldsymbol{W}$ to have real entries, $\hat{w}_{j}=\bar{\hat{w}}_{d-j}$.
+Let $\boldsymbol{P}^{\text{cond}}_{kk}=f^{H}_{k}\boldsymbol{\Sigma}_{\text{cond}}f_{k}$.
+Then:
+\[
+\mathcal{L}^{\text{circ}}_{\sigma,\boldsymbol{U}}=\sum^{d}_{k=1}(\|\hat{w}_{k}\|^{2}(\boldsymbol{P}^{\text{cond}}_{kk}+\sigma^{2})-2\text{Re}(\hat{w}_{k})\boldsymbol{P}^{\text{cond}}_{kk})+\text{Tr}(\boldsymbol{\Sigma}_{\text{cond}})
+\]
+Recall that $\boldsymbol{\Sigma}_{\text{cond}}=\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}-\text{Cov}(\boldsymbol{x_{0}},\boldsymbol{U})\boldsymbol{\Sigma}^{-1}_{\boldsymbol{U}}\text{Cov}(\boldsymbol{U},\boldsymbol{x_{0}})=\text{Var}(\boldsymbol{x_{0}}\mid\boldsymbol{U})$
+so $\boldsymbol{\Sigma}_{\text{cond}}$ is positive semi-definite
+and so $\boldsymbol{P}^{\text{cond}}_{kk}$ is real and non-negative.
+Similar to above, optimize for each $\hat{w}_{k}$ independently.
+Let $\hat{w}_{k}=a+bi$ where $a,b\in\mathbb{R}$; we're minimizing:
+\[
+\|\hat{w}_{k}\|^{2}(\boldsymbol{P}^{\text{cond}}_{kk}+\sigma^{2})-2\text{Re}(\hat{w}_{k})\boldsymbol{P}^{\text{cond}}_{kk}=(a^{2}+b^{2})(\boldsymbol{P}^{\text{cond}}_{kk}+\sigma^{2})-2a\boldsymbol{P}^{\text{cond}}_{kk}
+\]
+Again it ought to be that $b=0$ and:
+\[
+a=\frac{\boldsymbol{P}^{\text{cond}}_{kk}}{\boldsymbol{P}^{\text{cond}}_{kk}+\sigma^{2}}=\hat{w}^{*}_{k}
+\]
+And so:
+\[
+\mathcal{L}^{\text{circ}}_{\sigma,\boldsymbol{U}}=\sigma^{2}\sum^{d}_{k=1}\frac{\boldsymbol{P}^{\text{cond}}_{kk}}{\boldsymbol{P}^{\text{cond}}_{kk}+\sigma^{2}}
+\]
+Recall that the optimal conditional linear denoiser loss without any
+constraint on $\boldsymbol{W}_{\sigma}$ is:
+\[
+\mathcal{L}_{\sigma,\boldsymbol{U}}=\sigma^{2}\sum^{d}_{k=1}\frac{\lambda^{\text{cond}}_{k}}{\lambda^{\text{cond}}_{k}+\sigma^{2}}
+\]
+where $\lambda^{\text{cond}}_{k}$ is the eigenvalues of $\boldsymbol{\Sigma}_{\text{cond}}$,
+and also the eigenvalues of $\boldsymbol{P}^{\text{cond}}$. Then
+like before, by the Schur-Horn Theorem, for the Hermitian $\boldsymbol{P}^{\text{cond}}$,
+$\boldsymbol{\lambda}^{\text{cond}}\succ\text{diag}(\boldsymbol{P}^{\text{cond}})$.
+And so by the Karamata's Inequality/Majorization Theorem:
+\[
+\mathcal{L}^{\text{circ}}_{\sigma,\boldsymbol{U}}=\sigma^{2}\sum^{d}_{k=1}\frac{\boldsymbol{P}^{\text{cond}}_{kk}}{\boldsymbol{P}^{\text{cond}}_{kk}+\sigma^{2}}\geq\sigma^{2}\sum^{d}_{k=1}\frac{\lambda^{\text{cond}}_{k}}{\lambda^{\text{cond}}_{k}+\sigma^{2}}=\mathcal{L}_{\sigma,\boldsymbol{U}}
+\]
+Again in the conditional case, constraining $\boldsymbol{W}_{\sigma}$
+to be circulant doesn't buy us anything more than the optimal linear
+denoiser does. Also note that the gain from going from unconditional
+to conditional in the case of circulant $\boldsymbol{W}_{\sigma}$
+is the gain of going from $\text{Var}(\boldsymbol{x_{0}})=\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}$
+to $\text{Var}(\boldsymbol{x_{0}}\mid\boldsymbol{U})=\boldsymbol{\Sigma}_{\text{cond}}$
+w.r.t. getting the values of $\boldsymbol{P}_{kk}=f^{H}_{k}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}f_{k}$
+v.s. $\boldsymbol{P}^{\text{cond}}_{kk}=f^{H}_{k}\boldsymbol{\Sigma}_{\text{cond}}f_{k}$.
+
+\section{Unconditional Nonlinear Denoiser with Circulant Matrix}
+
+Recall that the nonlinear map is: 
+\[
+\phi(\boldsymbol{y})=\omega(\Theta\boldsymbol{y}+\epsilon)
+\]
+where $\Theta\in\mathbb{R}^{k\times d}$ and $\epsilon\in\mathbb{R}^{k}$
+are random matrices and the denoiser w.r.t this non-linear feature
+map is:
+\[
+\boldsymbol{D}(\boldsymbol{y};\sigma)=\boldsymbol{W}_{\sigma}\phi(\boldsymbol{y})+\boldsymbol{b}_{\sigma}
+\]
+where $\boldsymbol{W}_{\sigma}\in\mathbb{R}^{d\times k}$ and $\boldsymbol{b}_{\sigma}\in\mathbb{R}^{d}$.
+Since circulant matrices need to be square, assuming $k$ is divisible
+by $d$ (which is the setup of our RF scaling experiment where we
+drive $k/d$ to $\infty$), we can constrain $\Theta$ and $\boldsymbol{W}_{\sigma}$
+to be circulant by block of $d\times d$. Let $k=c\cdot d$, write
+$\Theta=\begin{bmatrix}\Theta_{1} & \Theta_{2} & \dots & \Theta_{c}\end{bmatrix}^{\top}$
+where each $\Theta_{a}$ is a $d\times d$ circulant matrix. Correspondingly,
+$\boldsymbol{W}_{\sigma}=\begin{bmatrix}\boldsymbol{W}_{1} & \boldsymbol{W}_{2} & \dots & \boldsymbol{W}_{c}\end{bmatrix}$,
+each $\boldsymbol{W}_{a}$ for $a\in\{1,2,\dots,c\}$ is $d\times d$
+circulant. Now, a circulant matrix is determined by the entries of
+its first row, and the following rows after is just a cyclic shift
+(each by one entry to the right), for example:
+\[
+\Theta_{a}=\begin{bmatrix}a_{1} & a_{2} & \dots & a_{d}\\
+a_{d} & a_{1} & a_{2} & \dots\\
+\vdots & \vdots & \vdots & \vdots\\
+a_{2} & \dots & a_{d} & a_{1}
+\end{bmatrix}
+\]
+Denote this cyclic shift as $\Theta_{a}=\text{circ}(h_{a})$ where
+$h_{a}=\begin{bmatrix}a_{1} & a_{2} & \dots & a_{d}\end{bmatrix}$.
+Under the random-feature framework, $h_{a}\sim\mathcal{N}(0,\frac{1}{d}\boldsymbol{I})$.
+Hence each entry in the first row and so in the entire matrix has
+marginal distribution $\mathcal{N}(0,1/d)$, the same as in the regular
+case where there is no circulant constraint on $\Theta$ and $\boldsymbol{W}_{\sigma}$.
+Our RF matrices in this case differ only in the joint distribution,
+where each row in $\Theta_{a}$ is completely dependent on the first
+row and each other; while in the regular case the rows are independent.
+We have:
+\[
+\Theta\boldsymbol{y}=\begin{bmatrix}\Theta_{1}\boldsymbol{y} & \Theta_{2}\boldsymbol{y} & \dots & \Theta_{c}\boldsymbol{y}\end{bmatrix}^{\top}
+\]
+Let's index the rows if $\Theta$ with $\{j=(a,\tau)\}$ where $a\in{1,2,\dots,c}$
+is indexing into the circulant blocks (there are $c$blocks) and $\tau=\{1,2,\dots,d-1\}$
+is indexing into the rows of a circulant block starting from after
+the first rows; each row is cyclic shift by $\tau$ entry to the right
+of the first row $h_{a}=\begin{bmatrix}a_{1} & a_{2} & \dots & a_{d}\end{bmatrix}$,
+i.e. $\Theta_{(a,\tau)}=S^{\tau}h_{a}$, for example $\Theta_{(a,1)}=S^{1}h_{a}=\begin{bmatrix}a_{d} & a_{1} & a_{2} & \dots\end{bmatrix}$,
+$\Theta_{(a,d-1)}=S^{d-1}h_{a}=\begin{bmatrix}a_{2} & \dots & a_{d} & a_{1}\end{bmatrix}$ 
+
+$S$ is the shift operator where $(Sx)_{i}=x_{i-1\mod d}$, so $(S^{\tau}x)_{i}=x_{i-\tau}$,
+and $S^{\top}=S^{-1}$. 
+
+For now let the noise $\epsilon$ be the same for each row in a block;
+i.e. $\epsilon_{(a,\tau)}=\epsilon_{a}$, so noise is the same for
+each feature in the same circulant block; since each row is a cyclic
+shift of the first, this is to avoid random noise diluting the effect
+of the cyclic shift (intuitively?, I'll come back to this later).
+So $\epsilon$is drawn once and then fixed for each block. We have:
+\[
+[\Theta_{a}\boldsymbol{y}]_{\tau}=\Theta^{\top}_{(a,\tau)}\boldsymbol{y}=h^{\top}_{a}(S^{\tau})^{\top}\boldsymbol{y}=h^{\top}_{a}S^{-\tau}\boldsymbol{y}
+\]
+Let $\phi_{a}(\boldsymbol{y})=\omega(\Theta_{a}\boldsymbol{y}+\epsilon_{a})$,
+then:
+\[
+\boldsymbol{D}(\boldsymbol{y};\sigma)=\sum^{c}_{a=1}\boldsymbol{W}_{a}\phi_{a}(\boldsymbol{y})+\boldsymbol{b}_{\sigma}
+\]
+Let each $\boldsymbol{W}_{a}=\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}_{a}})\boldsymbol{F}$,
+where $\text{diag}(\hat{\boldsymbol{W}}_{a})_{j}\coloneqq\hat{w}^{a}_{j}=\sum^{d}_{k=0}w^{a}_{k}e^{-2\pi ijk/d}$
+($w^{a}_{k}$ is the $k$-th entry of the first row of $\boldsymbol{W}_{a}$).
+Recall from last write-up the denoiser loss is:
+\[
+\mathcal{L}^{\text{circ}}_{\sigma}=\text{Tr}(\boldsymbol{W}_{\sigma}\boldsymbol{\Sigma}_{\phi}\boldsymbol{W}^{\top}_{\sigma}-2\boldsymbol{W}_{\sigma}\boldsymbol{\Sigma}_{\phi,\boldsymbol{x_{0}}}+\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})
+\]
+$\boldsymbol{\Sigma}_{\phi}$ is $cd\times cd$, we can partition
+into $c^{2}$ blocks of $d\times d$, denote each block $\boldsymbol{\Sigma}^{(a,b)}_{\phi}=\boldsymbol{\Sigma}_{\phi_{a},\phi_{b}}$
+where $1\leq a,b\leq c$. $\boldsymbol{\Sigma}_{\phi,\boldsymbol{x_{0}}}$
+is $cd\times d$, so we can partition into c blocks of $d\times d$
+along its rows, denote each block $\boldsymbol{\Sigma}_{\phi_{a},\boldsymbol{x_{0}}}$.
+Consider:
+\[
+\boldsymbol{W}_{\sigma}\boldsymbol{\Sigma}_{\phi}=\begin{bmatrix}\sum_{a}\boldsymbol{W}_{a}\boldsymbol{\Sigma}_{\phi_{a},\phi_{1}} & \sum_{a}\boldsymbol{W}_{a}\boldsymbol{\Sigma}_{\phi_{a},\phi_{2}} & \dots & \sum_{a}\boldsymbol{W}_{a}\boldsymbol{\Sigma}_{\phi_{a},\phi_{c}}\end{bmatrix}
+\]
+So:
+\begin{align*}
+\boldsymbol{W}_{\sigma}\boldsymbol{\Sigma}_{\phi}\boldsymbol{W}^{\top}_{\sigma} & =\sum_{a}\boldsymbol{W}_{a}\boldsymbol{\Sigma}_{\phi_{a},\phi_{1}}\boldsymbol{W}^{\top}_{1}+\sum_{a}\boldsymbol{W}_{a}\boldsymbol{\Sigma}_{\phi_{a},\phi_{2}}\boldsymbol{W}^{\top}_{2}+\dots+\sum_{a}\boldsymbol{W}_{a}\boldsymbol{\Sigma}_{\phi_{a},\phi_{d}}\boldsymbol{W}^{\top}_{d}\\
+ & =\sum^{c}_{a=1}\sum^{c}_{b=1}\big(\boldsymbol{W}_{a}\boldsymbol{\Sigma}^{(a,b)}_{\phi}\boldsymbol{W}^{\top}_{b}\big)
+\end{align*}
+Use the fact that: 
+\begin{align*}
+\text{Tr}(\boldsymbol{W}_{a}\boldsymbol{M}\boldsymbol{W}^{\top}_{b}) & =\text{Tr}(\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}_{a}})\boldsymbol{F}\boldsymbol{M}\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}_{b}})^{H}\boldsymbol{F})\\
+ & =\text{Tr}(\text{diag}(\hat{\boldsymbol{W}_{a}})\boldsymbol{F}\boldsymbol{M}\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}_{b}})^{H})
+\end{align*}
+then let $\boldsymbol{P}^{(a,b)}=\boldsymbol{F}\boldsymbol{\Sigma}^{(a,b)}_{\phi}\boldsymbol{F}^{*}$,
+so $\boldsymbol{P}^{(a,b)}_{kk}=f^{H}_{k}\boldsymbol{\Sigma}^{(a,b)}_{\phi}f_{k}$
+where $f_{k}$ is the $k$-th column of $\boldsymbol{F}^{*}$, or
+the conjugate of the $k$-th row of $\boldsymbol{F}$. Note that $\boldsymbol{\Sigma}^{(a,b)}_{\phi}$
+is not symmetric; rather $\boldsymbol{\Sigma}_{\phi}$ is symmetric
+so $(\boldsymbol{\Sigma}^{(a,b)}_{\phi})^{\top}=\boldsymbol{\Sigma}^{(b,a)}_{\phi}$.
+So here we can't apply the reasoning from the linear case for $a\neq b$
+to make statements about $\boldsymbol{P}^{(a,b)}_{kk}$, so we separate
+the pair indices into $(a,b)$ for $a\neq b$ and $(a,a)$. For $(a,a)$
+indices, $\boldsymbol{P}^{(a,a)}_{kk}$ is real and non-negative,
+and $\boldsymbol{P}^{(a,a)}_{kk}=\boldsymbol{P}^{(a,a)}_{d-k,d-k}$.
+For $(a,b)$, we have:
+\[
+(\boldsymbol{P}^{(a,b)}_{kk})^{H}=f^{H}_{k}(\boldsymbol{\Sigma}^{(a,b)}_{\phi})^{H}(f^{H}_{k})^{H}=f^{H}_{k}\boldsymbol{\Sigma}^{(b,a)}_{\phi}f_{k}=\boldsymbol{P}^{(b,a)}_{kk}
+\]
+and since $f_{d-k}=\overline{f_{k}}$:
+\begin{align*}
+\boldsymbol{P}^{(a,b)}_{d-k,d-k} & =f^{H}_{d-k}\boldsymbol{\Sigma}^{(a,b)}_{\phi}f_{d-k}\\
+ & =(\overline{f_{k}})^{H}\boldsymbol{\Sigma}^{(a,b)}_{\phi}\overline{f_{k}}=f^{\top}_{k}\boldsymbol{\Sigma}^{(a,b)}_{\phi}\overline{f_{k}}\\
+ & =\text{conj}(f^{H}_{k}\boldsymbol{\Sigma}^{(a,b)}_{\phi}f_{k})=\text{conj}(\boldsymbol{P}^{(a,b)}_{kk})
+\end{align*}
+Consider the first term:
+\begin{align*}
+\text{Tr}(\boldsymbol{W}_{\sigma}\boldsymbol{\Sigma}_{\phi}\boldsymbol{W}^{\top}_{\sigma}) & =\sum^{c}_{a=1}\sum^{c}_{b=1}\text{Tr}(\text{diag}(\hat{\boldsymbol{W}_{a}})\boldsymbol{P}^{(a,b)}\text{diag}(\hat{\boldsymbol{W}_{b}})^{H})\\
+ & =\sum^{c}_{a=1}\sum^{c}_{b=1}\sum^{d}_{k=1}\hat{w}^{a}_{k}\boldsymbol{P}^{(a,b)}_{kk}\text{conj}(\hat{w}^{b}_{k})
+\end{align*}
+Pair summand $(a,b)$ with $(b,a)$ for $a\neq b$, such that we can
+cancel out the imaginary part of $\hat{w}^{a}_{k}$ and $\hat{w}^{b}_{k}$:
+\begin{align*}
+ & \hat{w}^{a}_{k}\boldsymbol{P}^{(a,b)}_{kk}\text{conj}(\hat{w}^{b}_{k})+\hat{w}^{b}_{k}\boldsymbol{P}^{(b,a)}_{kk}\text{conj}(\hat{w}^{a}_{k})\\
+ & =\boldsymbol{P}^{(a,b)}_{kk}(\hat{w}^{a}_{k}\text{conj}(\hat{w}^{b}_{k}))+\boldsymbol{P}^{(b,a)}_{kk}\hat{w}^{b}_{k}\text{conj}(\hat{w}^{a}_{k})\\
+ & =\boldsymbol{P}^{(a,b)}_{kk}(\hat{w}^{a}_{k}\text{conj}(\hat{w}^{b}_{k}))+\text{conj}(\boldsymbol{P}^{(a,b)}_{kk})\text{conj}(\hat{w}^{a}_{k}\text{conj}(\hat{w}^{b}_{k}))\\
+ & =2\text{Re}(\hat{w}^{a}_{k}\boldsymbol{P}^{(a,b)}_{kk}\text{conj}(\hat{w}^{b}_{k}))
+\end{align*}
+Therefore:
+\[
+\text{Tr}(\boldsymbol{W}_{\sigma}\boldsymbol{\Sigma}_{\phi}\boldsymbol{W}^{\top}_{\sigma})=\sum^{c}_{a\neq b}\sum^{d}_{k=1}2\text{Re}(\hat{w}^{a}_{k}\boldsymbol{P}^{(a,b)}_{kk}\text{conj}(\hat{w}^{b}_{k}))+\sum^{c}_{a=1}\sum^{d}_{k=1}\|\hat{w}^{a}_{k}\|^{2}\boldsymbol{P}^{(a,a)}_{kk}
+\]
+Next, we evaluate the cross-covariance term $-2\text{Tr}(W_{\sigma}\Sigma_{\phi,x_{0}})$.
+Partitioning $\Sigma_{\phi,x_{0}}$ into $c$ blocks of $d\times d$
+along its rows, denoted as $\Sigma_{\phi_{a},x_{0}}$, then:
+\[
+\boldsymbol{W}_{\sigma}\Sigma_{\phi,\boldsymbol{x_{0}}}=\sum^{c}_{a=1}\boldsymbol{W}_{a}\Sigma_{\phi_{a},\boldsymbol{x_{0}}}
+\]
+and
+\[
+\text{Tr}(\boldsymbol{W}_{\sigma}\Sigma_{\phi,\boldsymbol{x_{0}}})=\sum^{c}_{a=1}\text{Tr}(\text{diag}(\hat{\boldsymbol{W}}_{a})\boldsymbol{F}\Sigma_{\phi_{a},\boldsymbol{x_{0}}}\boldsymbol{F}^{*})
+\]
+Let $\boldsymbol{Q}^{(a)}=\boldsymbol{F}\Sigma_{\phi_{a},\boldsymbol{x_{0}}}\boldsymbol{F}^{*}$
+with diagonal entries $\boldsymbol{Q}^{(a)}_{kk}=f^{H}_{k}\boldsymbol{\Sigma}_{\phi_{a},\boldsymbol{x_{0}}}f_{k}$.
+Then:
+\[
+\text{Tr}(\boldsymbol{W}_{\sigma}\boldsymbol{\Sigma}_{\phi,\boldsymbol{x_{0}}})=\sum^{c}_{a=1}\sum^{d}_{k=1}\hat{w}^{a}_{k}\boldsymbol{Q}^{(a)}_{kk}
+\]
+Since $\boldsymbol{\Sigma}_{\phi_{a},\boldsymbol{x_{0}}}$ has real
+entries, $\boldsymbol{Q}^{(a)}_{d-k,d-k}=\text{conj}(\boldsymbol{Q}^{(a)}_{kk})$.
+Also since $\boldsymbol{W}_{\sigma}$ has real entries, $\hat{w}^{a}_{j}=\text{conj}(\hat{w}^{a}_{d-j})$,
+pairing $k$ and $d-k$ gives: 
+\[
+\hat{w}^{a}_{k}\boldsymbol{Q}^{(a)}_{kk}+\hat{w}^{a}_{d-k}\boldsymbol{Q}^{(a)}_{d-k,d-k}=2\text{Re}(\hat{w}^{a}_{k}\boldsymbol{Q}^{(a)}_{kk})
+\]
+Plugging back into the loss expressions:
+\[
+\mathcal{L}^{\text{circ}}_{\sigma}=\sum^{d}_{k=1}\left[\sum^{c}_{a=1}\|\hat{w}^{a}_{k}\|^{2}\boldsymbol{P}^{(a,a)}_{kk}+\sum^{c}_{a\ne b}2\text{Re}(\hat{w}^{a}_{k}\boldsymbol{P}^{(a,b)}_{kk}\text{conj}(\hat{w}^{b}_{k}))-2\sum^{c}_{a=1}\text{Re}(\hat{w}^{a}_{k}\boldsymbol{Q}^{(a)}_{kk})\right]+\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})
+\]
+To optimize, we group the complex weights of all $c$ blocks into
+a vector $\hat{\mathbf{w}}_{k}=[\hat{w}^{1}_{k},\dots,\hat{w}^{c}_{k}]^{\top}\in\mathbb{C}^{c}$.
+Define the Hermitian matrix $\mathbf{P}_{k}\in\mathbb{C}^{c\times c}$
+where $(\mathbf{P}_{k})_{ab}=\boldsymbol{P}^{(a,b)}_{kk}$, and the
+vector $\mathbf{q}_{k}\in\mathbb{C}^{c}$ where $(\mathbf{q}_{k})_{a}=\boldsymbol{Q}^{(a)}_{kk}$.
+Let $\boldsymbol{v}_{k}\coloneqq\text{conj}(\hat{\mathbf{w}}_{k})$.
+Then $\sum^{c}_{a\ne b}\hat{w}^{a}_{k}\boldsymbol{P}^{(a,b)}_{kk}\text{conj}(\hat{w}^{b}_{k})=\boldsymbol{v}^{H}_{k}\mathbf{P}_{k}\boldsymbol{v}_{k}$
+and $\sum^{c}_{a=1}\hat{w}^{a}_{k}\boldsymbol{Q}^{(a)}_{kk}=\boldsymbol{v}^{H}_{k}\mathbf{q}_{k}$.
+Similar to above it looks like we can optimize w.r.t to each index
+$k$ independently, however note that there is one constraint $\hat{\mathbf{w}}_{k}=\text{conj}(\hat{\mathbf{w}}_{d-k})$,
+but since $\mathbf{P}_{k}=\text{conj}(\mathbf{P}_{d-k})$, optimizing
+for both independently is still valid since the two independent solution
+will automatically satisfy this constraint. The objective for a given
+$k$ is the quadratic form:
+\begin{align*}
+\mathcal{L}^{\text{circ}}_{\sigma,k} & =\boldsymbol{v}^{H}_{k}\mathbf{P}_{k}\boldsymbol{v}_{k}-2\text{Re}(\boldsymbol{v}^{H}_{k}\mathbf{q}_{k})\\
+ & =\boldsymbol{v}^{H}_{k}\mathbf{P}_{k}\boldsymbol{v}_{k}-\boldsymbol{v}^{H}_{k}\mathbf{q}_{k}-\mathbf{q}^{H}_{k}\boldsymbol{v}_{k}
+\end{align*}
+Taking the Wirtinger derivative w.r.t. $\boldsymbol{v}^{H}_{k}$ and
+setting it to $0$:
+
+\[
+\mathbf{P}_{k}\boldsymbol{v}_{k}-\mathbf{q}_{k}=0
+\]
+so
+\[
+\boldsymbol{v}^{*}_{k}=\mathbf{P}^{-1}_{k}\mathbf{q}_{k}
+\]
+Plugging back to get the loss:
+\[
+\mathcal{L}^{\text{circ}}_{\sigma}=\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})-\sum^{d}_{k=1}\mathbf{q}^{H}_{k}\mathbf{P}^{-1}_{k}\mathbf{q}_{k}
+\]
+Now it might be misleading to try to compare $\mathcal{L}^{\text{circ}}_{\sigma}$
+with $\mathcal{L}_{\sigma}=\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}-\text{Cov}(\boldsymbol{x_{0}},\phi)\boldsymbol{\Sigma}^{-1}_{\phi}\text{Cov}(\phi,\boldsymbol{x_{0}}))$
+since $\mathcal{L}_{\sigma}$ is the unconstrained denoiser with dense
+RF $\Theta$ inside $\phi$, however recall that $\Theta^{\text{circ}}$
+is not a subset of $\Theta^{\text{dense}}$ since the joint distributions
+of the rows are different: rows of $\Theta^{\text{circ}}$ are dependent
+while those of $\Theta^{\text{dense}}$ are independent. Thus we can
+no longer make a blanket claim that $\mathcal{L}^{\text{circ}}_{\sigma}\geq\mathcal{L}_{\sigma}$
+always, even though the $\boldsymbol{W}^{\text{circ}}_{\sigma}\subset\boldsymbol{W}_{\sigma}$
+still. The point is that given the same $\Theta$, since $\boldsymbol{W}^{\text{circ}}_{\sigma}$
+and $\boldsymbol{W}_{\sigma}$ are trainable, the loss for the denoiser
+with the contrained $\boldsymbol{W}^{\text{circ}}_{\sigma}$ can never
+be more optimal than that of the unconstrained, optimal $\boldsymbol{W}_{\sigma}$.
+However $\Theta$ in our circulant setting and $\Theta$ in the regular
+unconstrained nonlinear denoiser is not the same; thus leaving space
+for $\mathcal{L}^{\text{circ}}_{\sigma}$ to beat $\mathcal{L}_{\sigma}$
+
+\section{When does $\mathcal{L}^{\text{circ}}_{\sigma}$ beat $\mathcal{L}_{\sigma}$?}
+
+Through our experiments the RF denoiser needs a lot of features, i.e.
+$k/d\to\infty$. We know that circulant structure gives its best loss
+when the data is stationary, for example in a face dataset, the nose
+can equally be in the pixel at the top of the image as the pixel in
+the middle. We want to know if the circulant structure can help when
+we have finite $k$. To formalize this we first decompose the loss
+between the circulant structure and the dense structure:
+\[
+\mathcal{L}^{\text{circ}}(k)-\mathcal{L}^{\text{dense}}(k)=A_{\text{circ}}(k)+\Delta_{\text{stat}}(\sigma)-A_{\text{dense}}(k)
+\]
+where 
+\begin{align*}
+A_{\text{dense}}(k) & :=\mathcal{L}^{\text{dense}}(k)-\text{MMSE}(\boldsymbol{p_{0}})\\
+A_{\text{circ}}(k) & \coloneqq\mathcal{L}^{\text{circ}}(k)-\text{MMSE}(\bar{\boldsymbol{p_{0}}})\\
+\bar{\boldsymbol{p_{0}}}(x) & =\frac{1}{d}\sum^{d-1}_{\tau=0}\boldsymbol{p_{0}}(S^{-\tau}x)\\
+\ensuremath{\Delta_{\text{stat}}(\sigma)} & :=\text{MMSE}(\bar{\boldsymbol{p_{0}}})-\text{MMSE}(\boldsymbol{p_{0}})
+\end{align*}
+is a stationary/shift-variant distribution made from shift-symmetrizing
+the true data distribution i.e. $\boldsymbol{p_{0}}$, by applying
+a cyclic shift operator $S^{-\tau}$ to every possible shift $\tau$,
+and then averaging the result.
+
+By constraining the weights to a circulant matrix, the network is
+forced to be shift-equivariant. Therefore, when evaluating the non-stationary
+data distribution $\boldsymbol{p_{0}}$, the constrained denoiser
+mathematically optimizes as if the data were drawn from the shift-symmetrized
+(stationary) distribution $\bar{\boldsymbol{p_{0}}}$. Theoretically
+it can never be better than $\text{MMSE}(\bar{\boldsymbol{p_{0}}})$.
+This cost is quantified by $\ensuremath{\Delta_{\text{stat}}(\sigma)}$.
+Note that $\bar{\boldsymbol{p_{0}}}$ is generatively $\bar{\boldsymbol{x_{0}}}=S^{T}\boldsymbol{x_{0}}$,
+where the shift is $T\sim\text{Unif}\{0,\dots,d-1\}$. Because conditioning
+on $T$ brings the problem back to the unshifted, non-stationary $\boldsymbol{p_{0}}$,
+the stationarization penalty is equivalent to the gap between unconditional
+and conditional denoising:
+
+\[
+\Delta_{\text{stat}}(\sigma)=\text{MMSE}_{\bar{\boldsymbol{p_{0}}}}[\boldsymbol{X}\mid\boldsymbol{Y}_{\sigma}]-\text{MMSE}_{\bar{\boldsymbol{p_{0}}}}[\boldsymbol{X}\mid\boldsymbol{Y}_{\sigma},T]
+\]
+By the I-MMSE identity, integrating this penalty over the noise schedule
+gives the mutual information between the shifted data and the shift
+operator, bounded by the entropy of $T$:
+
+\[
+\frac{1}{2}\int^{\infty}_{0}\frac{dt}{t^{2}}\Delta_{\text{stat}}(t)=I(\bar{\boldsymbol{x_{0}}};T)\le H(T)=\log d
+\]
+Because the penalty $\Delta_{\text{stat}}$ is bounded by $\log d$
+across the noise schedule, it is a finite constant independent of
+$k$. Conversely, at small $k$, $A_{\text{dense}}(k)$ is unconstrained/unbounded
+due to the $O(d^{n})$ parameters required to cover the dense feature
+space. Furthermore, $A_{\text{circ}}$ is a stationary problem on
+$\bar{\boldsymbol{p_{0}}}$, therefore we can derive this as it decomposes
+per-frequency like in the last section. $\boldsymbol{W}=0$ is possible,
+so $\mathcal{L}^{\text{circ}}\leq\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})$
+(mean-predicting), so $0\leq A_{\text{circ}}(k)\leq\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})-\text{MMSE}(\bar{\boldsymbol{p_{0}}})$.
+If we consider the difference:
+\[
+\mathcal{L}^{\text{circ}}(k)-\mathcal{L}^{\text{dense}}(k)=A_{\text{circ}}(k)+\Delta_{\text{stat}}(\sigma)-A_{\text{dense}}(k)
+\]
+
+If $k\to0$, both models degenerate to the bias-only predictor, $\mathcal{L}^{\text{circ}},\mathcal{L}^{\text{dense}}\to\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})$,
+so $A_{\text{dense}}(k)-A_{\text{circ}}(k)\to\Delta_{\text{stat}}$,
+so the difference $\to0$. On the other hand if $k\to\infty$, both
+$A$ vanishes, and the difference $\to\Delta_{\text{stat}}>0$, so
+dense would win.
+
+So the win region is where $A_{\text{dense}}(k)-A_{\text{circ}}(k)$
+rises above its starting value $\Delta_{\text{stat}}$ before decaying
+to $0$ along $k$, which can be non-monotone. Point is if we can
+compute these quantities from our data set then we get a set of $k$
+where the circulant denoiser outperforms the dense denoiser.
+\end{document}
