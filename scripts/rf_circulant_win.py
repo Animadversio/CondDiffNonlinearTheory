@@ -47,6 +47,12 @@ N_REP      = int(os.environ.get('N_REP', '6'))         # projection draws to ave
 N_MC_EXACT = int(os.environ.get('N_MC_EXACT', '200000'))
 SIGMA_VALUES = [float(s) for s in os.environ.get('SIGMA_VALUES', '0.5,1.0,2.0,5.0').split(',')]
 K_CIRC = [2 ** i for i in range(3, 16) if 2 ** i <= K_MAX and (2 ** i) % D == 0]
+# Effective-dimension knob: number of coordinates carrying non-trivial (mean +
+# anisotropy) structure. The data stays NON-stationary (axis-pinned to the first
+# m_active coords) — we do NOT stationarise (that would trivially favour circulant).
+# Comma-separated -> sweep. Signal budget is normalised (below) so total mean
+# separation and anisotropic variance are m-independent, isolating effective dim.
+M_ACTIVE_LIST = [int(x) for x in os.environ.get('M_ACTIVE', '3,8,14,20,26').split(',')]
 
 DEVICE = os.environ.get('DEVICE', 'cpu')
 if DEVICE == 'cuda':
@@ -73,20 +79,40 @@ else:
 from core.rf_circulant import build_circulant_theta
 
 
-def make_gmm(seed=SEED):
-    """Same GMM as scripts/rf_gmm_finite_sample.py, at dimension D."""
-    rng = np.random.default_rng(seed)
+BASE_VAR = 0.4       # baseline (filler) coordinate variance
+SEP      = 2.5       # per-class mean norm (fixed across m_active)
+ANISO    = 3.0       # total excess (above-baseline) variance per class (fixed across m_active)
+
+
+def make_gmm_active(m_active, seed=SEED):
+    """Non-stationary GMM (D dims, N_CLASSES comps) whose mean + anisotropy structure
+    is confined to the first m_active coordinates (axis-pinned -> NOT shift-invariant).
+    Normalised so the total signal budget is m-independent: each class mean has norm
+    SEP, and each class's excess variance above BASE_VAR sums to ANISO, spread over the
+    m_active active coords. This isolates *effective dimension* (how many coords carry
+    structure) from raw signal power, so a win opening as m grows is about dimension,
+    not power. Filler coords (m_active..D-1): zero mean, BASE_VAR variance."""
+    rng = np.random.default_rng(seed + 1000 * m_active)
     d = D
+    m = int(np.clip(m_active, 1, d))
+    # class means: centred unit directions in the active block, scaled to norm SEP
+    G = rng.standard_normal((N_CLASSES, m))
+    G -= G.mean(0, keepdims=True)                       # centre so overall mean modest
+    G /= np.maximum(np.linalg.norm(G, axis=1, keepdims=True), 1e-9)
     means = np.zeros((N_CLASSES, d))
-    means[0, 0] = 2.0
-    means[1, 0] = -1.0; means[1, 1] = 1.5
-    means[2, 0] = -1.0; means[2, 1] = -1.0; means[2, 2] = 1.2
-    s0 = np.full(d, 0.4); s0[0] = 1.2
-    s1 = np.full(d, 0.4); s1[0] = 0.4; s1[1] = 1.0; s1[2] = 0.8
-    A = rng.standard_normal((d, d)) * 0.3
-    S2 = A @ A.T + 0.5 * np.eye(d)
-    return GaussianMixture(weights=np.array(WEIGHTS), means=means,
-                           covs=np.stack([np.diag(s0), np.diag(s1), S2]))
+    means[:, :m] = SEP * G
+    covs = []
+    for c in range(N_CLASSES):
+        exc = rng.random(m) + 0.2
+        exc *= ANISO / exc.sum()                        # excess var, total ANISO over m coords
+        diag = np.full(d, BASE_VAR)
+        diag[:m] = BASE_VAR + exc
+        S = np.diag(diag)
+        if c == N_CLASSES - 1:                           # one class: dense (rotated) active block
+            Q = np.linalg.qr(rng.standard_normal((m, m)))[0]
+            S[:m, :m] = Q @ np.diag(BASE_VAR + exc) @ Q.T
+        covs.append(S)
+    return GaussianMixture(weights=np.array(WEIGHTS), means=means, covs=np.stack(covs))
 
 
 def shift_symmetrized_gmm(gmm):
@@ -110,18 +136,17 @@ def shift_symmetrized_gmm(gmm):
                            covs=np.stack(covs))
 
 
-def main():
-    print(f"[circulant-win] d={D}, K_CIRC={K_CIRC}, N_POP={N_POP}, N_REP={N_REP}, "
-          f"DEVICE={DEVICE}, sigmas={SIGMA_VALUES}")
-    gmm = make_gmm(SEED)
+def run_one(m_active):
+    """Compute L^dense(k), L^circ(k) and the MMSE floors for one active-dim GMM.
+    Saves a detailed per-σ figure; returns a results dict for the trend summary."""
+    gmm = make_gmm_active(m_active, SEED)
     gmm_bar = shift_symmetrized_gmm(gmm)
-    print(f"Tr(Sigma_p0)={np.trace(gmm.Sigma):.4f}   Tr(Sigma_pbar0)={np.trace(gmm_bar.Sigma):.4f}")
+    print(f"\n=== m_active={m_active} ===  Tr(Σp0)={np.trace(gmm.Sigma):.4f}  "
+          f"Tr(Σpbar0)={np.trace(gmm_bar.Sigma):.4f}")
 
-    # Population proxy sample (fixed across k and projections)
     rng = np.random.default_rng(SEED + 7)
     x0_pop, _, U_pop = gmm.sample(N_POP, rng=rng)
 
-    # Population Bayes MMSE for p0 and pbar0 (per sigma)
     mmse_p0, mmse_pbar0 = {}, {}
     rng_mc = np.random.default_rng(SEED + 11)
     for s in SIGMA_VALUES:
@@ -130,45 +155,33 @@ def main():
         print(f"  σ={s}: MMSE(p0)={mmse_p0[s]:.4f}  MMSE(pbar0)={mmse_pbar0[s]:.4f}  "
               f"Δ_stat={mmse_pbar0[s]-mmse_p0[s]:.4f}")
 
-    # Sweep k, averaging over N_REP projection draws
     L_dense = {s: [] for s in SIGMA_VALUES}
     L_circ  = {s: [] for s in SIGMA_VALUES}
     rng_proj = np.random.default_rng(SEED + 100)
-    for k in tqdm(K_CIRC, desc='k'):
+    for k in tqdm(K_CIRC, desc=f'k (m={m_active})'):
         dense_Th = [rng_proj.standard_normal((k, D)) / np.sqrt(D) for _ in range(N_REP)]
         circ_Th  = [build_circulant_theta(k, D, rng_proj) for _ in range(N_REP)]
         for s in SIGMA_VALUES:
-            ld = np.mean([_dense(x0_pop, U_pop, Th, s) for Th in dense_Th])
-            lc = np.mean([_circ(x0_pop, U_pop, Th, s) for Th in circ_Th])
-            L_dense[s].append(float(ld))
-            L_circ[s].append(float(lc))
+            L_dense[s].append(float(np.mean([_dense(x0_pop, U_pop, Th, s) for Th in dense_Th])))
+            L_circ[s].append(float(np.mean([_circ(x0_pop, U_pop, Th, s) for Th in circ_Th])))
 
     kd = np.array(K_CIRC) / D
-    os.makedirs('tables', exist_ok=True)
-    np.savez('tables/rf_circulant_win.npz',
-             k_circ=np.array(K_CIRC), kd=kd, sigma_values=np.array(SIGMA_VALUES),
-             **{f'L_dense_s{s}': np.array(L_dense[s]) for s in SIGMA_VALUES},
-             **{f'L_circ_s{s}':  np.array(L_circ[s])  for s in SIGMA_VALUES},
-             mmse_p0=np.array([mmse_p0[s] for s in SIGMA_VALUES]),
-             mmse_pbar0=np.array([mmse_pbar0[s] for s in SIGMA_VALUES]))
-
-    # ---- report win set ----
-    print("\n=== Win set {k : L^circ(k) < L^dense(k)} ===")
+    print(f"  Win set {{k : L^circ<L^dense}} (m_active={m_active}):")
     for s in SIGMA_VALUES:
         ld = np.array(L_dense[s]); lc = np.array(L_circ[s])
         win = [int(k) for k, a, b in zip(K_CIRC, lc, ld) if a < b]
-        print(f"  σ={s}: win_k={win if win else 'none'}   "
-              f"(min L^circ-L^dense = {np.min(lc-ld):+.4f} at k={K_CIRC[int(np.argmin(lc-ld))]})")
+        print(f"    σ={s}: win_k={win if win else 'none'}  "
+              f"(min L^circ-L^dense={np.min(lc-ld):+.4f} at k={K_CIRC[int(np.argmin(lc-ld))]})")
 
-    # ---- figure: L^circ vs L^dense, plus the A_dense-A_circ vs Δ_stat view ----
+    # detailed per-σ figure
     nS = len(SIGMA_VALUES)
     fig, axes = plt.subplots(2, nS, figsize=(5 * nS, 8.5))
     axes = np.asarray(axes).reshape(2, nS)
-    fig.suptitle(f'Circulant vs dense nonlinear RF denoiser (newfile5 §4) — GMM d={D}, C={N_CLASSES}\n'
+    fig.suptitle(f'Circulant vs dense nonlinear RF denoiser (newfile5 §4) — GMM d={D}, C={N_CLASSES}, '
+                 f'{m_active} active coords (non-stationary)\n'
                  f'population proxy N={N_POP}, {N_REP} projection draws averaged', fontsize=11)
     for col, s in enumerate(SIGMA_VALUES):
         ld = np.array(L_dense[s]); lc = np.array(L_circ[s])
-        # top: absolute losses
         ax = axes[0, col]
         ax.plot(kd, ld, color='teal', lw=2, marker='o', ms=4, label='$\\mathcal{L}^{\\mathrm{dense}}$ (unconstrained W)')
         ax.plot(kd, lc, color='darkviolet', lw=2, marker='s', ms=4, label='$\\mathcal{L}^{\\mathrm{circ}}$ (circulant W)')
@@ -182,10 +195,8 @@ def main():
         ax.set_title(f'σ={s}'); ax.grid(True, alpha=.3)
         if col == nS - 1:
             ax.legend(fontsize=7, loc='upper right')
-        # bottom: A_dense - A_circ vs Δ_stat  (win where this > Δ_stat)
         ax2 = axes[1, col]
-        A_dense = ld - mmse_p0[s]
-        A_circ  = lc - mmse_pbar0[s]
+        A_dense = ld - mmse_p0[s]; A_circ = lc - mmse_pbar0[s]
         dstat = mmse_pbar0[s] - mmse_p0[s]
         ax2.plot(kd, A_dense - A_circ, color='crimson', lw=2, marker='d', ms=4,
                  label='$A_{\\mathrm{dense}}(k)-A_{\\mathrm{circ}}(k)$')
@@ -201,9 +212,63 @@ def main():
             ax2.legend(fontsize=7, loc='upper right')
     fig.tight_layout()
     os.makedirs('figures', exist_ok=True)
-    out = 'figures/rf_circulant_win.png'
-    fig.savefig(out, dpi=150, bbox_inches='tight')
-    print(f"\nSaved {out}")
+    out = f'figures/rf_circulant_win_mact{m_active}.png'
+    fig.savefig(out, dpi=150, bbox_inches='tight'); plt.close(fig)
+    print(f"  Saved {out}")
+
+    return dict(m_active=m_active, kd=kd, L_dense=L_dense, L_circ=L_circ,
+                mmse_p0=mmse_p0, mmse_pbar0=mmse_pbar0)
+
+
+def main():
+    print(f"[circulant-win] d={D}, K_CIRC={K_CIRC}, N_POP={N_POP}, N_REP={N_REP}, "
+          f"DEVICE={DEVICE}, sigmas={SIGMA_VALUES}, M_ACTIVE={M_ACTIVE_LIST}")
+    results = [run_one(m) for m in M_ACTIVE_LIST]
+
+    os.makedirs('tables', exist_ok=True)
+    sd = {'k_circ': np.array(K_CIRC), 'sigma_values': np.array(SIGMA_VALUES),
+          'm_active_list': np.array(M_ACTIVE_LIST)}
+    for r in results:
+        m = r['m_active']
+        for s in SIGMA_VALUES:
+            sd[f'L_dense_m{m}_s{s}'] = np.array(r['L_dense'][s])
+            sd[f'L_circ_m{m}_s{s}']  = np.array(r['L_circ'][s])
+            sd[f'mmse_p0_m{m}_s{s}']    = r['mmse_p0'][s]
+            sd[f'mmse_pbar0_m{m}_s{s}'] = r['mmse_pbar0'][s]
+    np.savez('tables/rf_circulant_win.npz', **sd)
+
+    # ---- trend summary: does a win open as effective dimension (m_active) grows? ----
+    if len(results) > 1:
+        nS = len(SIGMA_VALUES)
+        fig, axes = plt.subplots(2, nS, figsize=(5 * nS, 8.5))
+        axes = np.asarray(axes).reshape(2, nS)
+        fig.suptitle('Does spreading structure over more coords open a circulant win? '
+                     f'(non-stationary, d={D})\n'
+                     'top: min_k (L^circ−L^dense) vs #active coords (<0 ⇒ win);  '
+                     'bottom: Δ_stat vs #active coords', fontsize=11)
+        ms = np.array([r['m_active'] for r in results])
+        for col, s in enumerate(SIGMA_VALUES):
+            min_gap = np.array([np.min(np.array(r['L_circ'][s]) - np.array(r['L_dense'][s]))
+                                for r in results])
+            dstat = np.array([r['mmse_pbar0'][s] - r['mmse_p0'][s] for r in results])
+            ax = axes[0, col]
+            ax.plot(ms, min_gap, color='crimson', lw=2, marker='o', ms=6)
+            ax.axhline(0, color='k', lw=1.0, ls='--')
+            winm = min_gap < 0
+            if winm.any():
+                ax.scatter(ms[winm], min_gap[winm], s=110, facecolors='none',
+                           edgecolors='green', lw=2, zorder=5, label='win exists')
+                ax.legend(fontsize=8)
+            ax.set_xlabel('# active coords'); ax.set_ylabel('min_k (L^circ − L^dense)')
+            ax.set_title(f'σ={s}'); ax.grid(True, alpha=.3)
+            ax2 = axes[1, col]
+            ax2.plot(ms, dstat, color='gray', lw=2, marker='s', ms=6)
+            ax2.set_xlabel('# active coords'); ax2.set_ylabel('Δ_stat')
+            ax2.set_title(f'σ={s}: stationarisation penalty'); ax2.grid(True, alpha=.3)
+        fig.tight_layout()
+        out = 'figures/rf_circulant_win_trend.png'
+        fig.savefig(out, dpi=150, bbox_inches='tight'); plt.close(fig)
+        print(f"\nSaved {out}")
 
 
 if __name__ == '__main__':

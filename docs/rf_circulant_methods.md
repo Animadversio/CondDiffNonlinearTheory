@@ -91,10 +91,30 @@ excess risk `A_dense` blows up faster than `A_circ`.
 
 **Result for the current GMM (d=32).** This GMM is strongly **non-stationary** (means and
 covariances concentrated on the first few coordinates), so `Δ_stat` is sizeable and no win
-window appears — `L^circ` sits above `L^dense` at every `k` (see `figures/rf_circulant_win.png`
-and the printed win set). The machinery is general: a win region is expected to open for
-data that is closer to shift-stationary (smaller `Δ_stat`). The figure's bottom row plots
-`A_dense − A_circ` against the `Δ_stat` threshold so the (non-)crossing is explicit.
+window appears — `L^circ` sits above `L^dense` at every `k`. The machinery is general: a win
+region is expected to open for data that is closer to shift-stationary (smaller `Δ_stat`).
+The figure's bottom row plots `A_dense − A_circ` against the `Δ_stat` threshold so the
+(non-)crossing is explicit.
+
+**Effective-dimension sweep (`M_ACTIVE`).** To test whether spreading the structure over
+more coordinates — *without* stationarising (which would trivially favour circulant) — opens
+a win, `make_gmm_active(m_active)` builds a non-stationary GMM whose mean + anisotropy
+structure is axis-pinned to the first `m_active` coords, **normalised so the total
+mean-separation and anisotropic-variance budgets are `m`-independent** (isolating effective
+dimension from raw signal power). Set `M_ACTIVE=3,8,14,20,26` to sweep; the driver emits a
+per-`m` detailed figure plus a trend figure `figures/rf_circulant_win_trend.png`
+(`min_k(L^circ−L^dense)` and `Δ_stat` vs `m_active`). Note `m_active` is **not** the number
+of components: `C=3` fixes the number of modes, and the component means span only ≤`C−1=2`
+dims, but the covariances are unconstrained and carry the `m_active`-dim anisotropy that sets
+the RF approximation cost.
+
+Finding: raising `m_active` 3→26 **monotonically narrows** the circulant gap
+`min_k(L^circ−L^dense)` (e.g. σ=1: 2.28→1.42; σ=2: 1.78→1.17) — the dense model loses
+relative ground as its target denoiser function becomes higher-dimensional and needs more
+features — but it does **not** cross zero: under fixed signal power `Δ_stat` stays sizeable
+(~0.3/1.7/2.3/0.9 at σ=0.5/1/2/5) and the circulant floor `MMSE(p̄0)` remains above
+`MMSE(p0)`. So effective dimension pushes toward a win but is not sufficient alone; the
+stationarisation toll `Δ_stat` (a covariance-geometry property) must also be small.
 
 ## 4. N_train figures
 
