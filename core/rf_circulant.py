@@ -52,6 +52,14 @@ def build_circulant_theta(k, d, rng, w=None):
         each feature reads a length-w window around one coordinate rather than the
         whole vector. Variance 1/w (not 1/d) keeps E||h_a||^2 = 1, so row norms —
         and hence the pre-activation scale — match the dense RF for every w.
+
+    WARNING — w=1 is DEGENERATE. Then h_a = [g_a, 0, ...], so Theta_a = g_a * I (a
+    scaled identity): the feature map does no spatial mixing at all. Worse, since
+    relu(g_a * y_i) = |g_a| * relu(+-y_i), the feature span collapses to
+    span{relu(y_i), relu(-y_i)} = span{y_i, |y_i|} — only 2 functions per coordinate
+    NO MATTER HOW LARGE k IS. L^circ(w=1) therefore saturates at tiny k and is later
+    overtaken by wider filters. Any small-k "win" at w=1 reflects fast saturation, not
+    expressivity. Use w>=2 for meaningful locality results.
     """
     if k % d != 0:
         raise ValueError(f"k={k} not divisible by d={d}; circulant needs whole blocks")

@@ -117,14 +117,27 @@ length-`w` window). Variance `1/w` (not `1/d`) keeps `E‖h_a‖² = 1`, so row 
 pre-activation scale match the dense RF at every `w`. Only `L^circ` depends on `w`;
 `L^dense`, `MMSE(p0)`, `MMSE(p̄0)` and `Δ_stat` are all `w`-independent.
 
-Finding — **locality opens genuine win regions**. Best bandwidth is `w=1` in every
-(σ, m_active) cell, and the gap grows monotonically with `w` (full width `w=d` is the worst
-case). At σ=0.5, `min_k(L^circ − L^dense)`:
+**⚠ `w=1` is degenerate — do not read it as a locality result.** At `w=1` the kernel is
+`h_a = [g_a, 0, …, 0]`, so `Θ_a = g_a·I` (a scaled identity — verified exactly): the feature
+map does **no spatial mixing** at all (only the readout `W` does). Worse,
+`relu(g_a·y_i) = |g_a|·relu(±y_i)`, so the whole feature span collapses to
+`span{relu(y_i), relu(−y_i)} = span{y_i, |y_i|}` — **2 functions per coordinate regardless of
+k**. Consequently `L^circ(w=1)` saturates almost immediately (flat at ~5.81 from `k/d≈8`,
+m=20/σ=0.5) and is eventually *overtaken* by full width (5.808 vs 5.761 at `k/d=128`). Its
+apparent "win" at small `k` is fast saturation, not expressivity. Keep it only as the
+boundary case; the meaningful local filters are `w=2,3,4`.
 
-| m_active | w=1 | w=2 | w=3 | w=4 | w=8 | w=32 |
+Finding — **locality opens genuine win regions**. The gap grows monotonically with `w`
+(full width `w=d` is the worst case), and the *non-degenerate* local filters `w=2,3,4` — which
+genuinely mix neighbouring coordinates and do not collapse to a diagonal — beat dense at
+σ=0.5, m_active=20. At σ=0.5, `min_k(L^circ − L^dense)`:
+
+| m_active | w=1 (degenerate) | w=2 | w=3 | w=4 | w=8 | w=32 |
 |---|---|---|---|---|---|---|
-| 3  | **−0.317** | +0.386 | +0.332 | +0.298 | +0.600 | +0.668 |
-| 20 | **−1.030** | **−0.617** | **−0.066** | **−0.097** | +0.366 | +0.456 |
+| 3  | *−0.317* | +0.386 | +0.332 | +0.298 | +0.600 | +0.668 |
+| 20 | *−1.030* | **−0.617** | **−0.066** | **−0.097** | +0.366 | +0.456 |
+
+(Bold = genuine local-filter wins; italic `w=1` = degenerate saturating case, see warning above.)
 
 Wins sit at small `k/d ≈ 1–4` — exactly the §4 prediction (circulant near its `MMSE(p̄0)`
 floor while dense is still far from `MMSE(p0)`); by `k/d ≳ 10` dense overtakes and the
