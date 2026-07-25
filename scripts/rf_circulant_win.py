@@ -13,10 +13,20 @@ both averaged over N_REP independent projection draws.
 Writeup decomposition (eq 4.x):
     L^circ(k) - L^dense(k) = A_circ(k) + Delta_stat(sigma) - A_dense(k)
       A_dense(k)     = L^dense(k) - MMSE(p0)
-      A_circ(k)      = L^circ(k)  - MMSE(pbar0)
-      Delta_stat     = MMSE(pbar0) - MMSE(p0)   (stationarisation penalty, k-independent)
+      A_circ(k)      = L^circ(k)  - floor_circ
+      Delta_stat     = floor_circ - MMSE(p0)    (stationarisation penalty, k-independent)
     pbar0 = shift-symmetrised data: xbar0 = S^T x0, T ~ Unif{0..d-1}. As a GMM this is
     the C*d components {(P_tau mu_c, P_tau Sigma_c P_tau^T, w_c/d)}.
+
+IMPORTANT — which floor.  The readout here uses a FREE bias b in R^d (the usual affine
+setup, equivariant_bias=False).  W phi(.) is shift-equivariant but a free per-position
+bias is NOT, so the model class is "equivariant map + arbitrary constant", strictly
+larger than strictly-equivariant.  Its floor is therefore NOT MMSE(pbar0) but the lower
+    floor_free = MMSE(pbar0) - g^T H^{-1} g
+computed exactly in core.equivariant_floor (the bias-optimisation is quadratic).  Using
+MMSE(pbar0) with a free bias produces spurious "L^circ below its own floor" readings —
+the free bias buys back part of the mean's non-stationary energy, at most
+||(I - P_1) mu_p0||^2 = Tr(Sigma_pbar0) - Tr(Sigma_p0).  So floor_circ := floor_free here.
 
 The "win set" is {k : L^circ(k) < L^dense(k)}. Asymptotically (k->inf) both A->0 so
 L^circ - L^dense -> Delta_stat > 0 (dense wins); at small k A_dense can blow up faster
@@ -35,6 +45,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from core.gmm import GaussianMixture
+from core.equivariant_floor import mmse_equivariant_floors, shift_symmetrized_gmm as _ssg
 
 D          = int(os.environ.get('D', '32'))
 N_CLASSES  = 3
@@ -154,13 +165,23 @@ def run_one(m_active):
     rng = np.random.default_rng(SEED + 7)
     x0_pop, _, U_pop = gmm.sample(N_POP, rng=rng)
 
-    mmse_p0, mmse_pbar0 = {}, {}
+    # Floors. The readout bias is FREE (equivariant_bias=False), so the denoiser is
+    # "equivariant map + arbitrary constant" — a strictly larger class than strictly
+    # shift-equivariant. Its floor is therefore NOT MMSE(pbar0) but the lower
+    # 'floor_free' = MMSE(pbar0) - g^T H^{-1} g (core.equivariant_floor). Using
+    # MMSE(pbar0) here yields spurious "L^circ below its own floor" violations.
+    # A_circ and Delta_stat are defined against floor_free to keep the Sec.4
+    # decomposition L^circ - L^dense = A_circ + Delta_stat - A_dense exact.
+    mmse_p0, mmse_pbar0, floor_free = {}, {}, {}
     rng_mc = np.random.default_rng(SEED + 11)
     for s in SIGMA_VALUES:
-        mmse_p0[s]    = gmm.mmse_uncond_exact(s, N_mc=N_MC_EXACT, rng=rng_mc)
-        mmse_pbar0[s] = gmm_bar.mmse_uncond_exact(s, N_mc=N_MC_EXACT, rng=rng_mc)
-        print(f"  σ={s}: MMSE(p0)={mmse_p0[s]:.4f}  MMSE(pbar0)={mmse_pbar0[s]:.4f}  "
-              f"Δ_stat={mmse_pbar0[s]-mmse_p0[s]:.4f}")
+        fl = mmse_equivariant_floors(gmm, s, N_mc=min(N_MC_EXACT, 60_000), rng=rng_mc)
+        mmse_p0[s]    = fl['mmse_p0']
+        mmse_pbar0[s] = fl['mmse_pbar0']
+        floor_free[s] = fl['floor_free']
+        print(f"  σ={s}: MMSE(p0)={mmse_p0[s]:.4f}  floor_free={floor_free[s]:.4f}  "
+              f"MMSE(pbar0)={mmse_pbar0[s]:.4f}  (bias gain {fl['bias_gain']:.4f})  "
+              f"Δ_stat={floor_free[s]-mmse_p0[s]:.4f}")
 
     # L_dense / floors are w-independent; L_circ is swept over filter bandwidth w.
     L_dense = {s: [] for s in SIGMA_VALUES}
@@ -213,16 +234,19 @@ def run_one(m_active):
                 ax.scatter(kd[win_mask], lc[win_mask], s=90, facecolors='none',
                            edgecolors='red', lw=1.8, zorder=5)
         ax.axhline(mmse_p0[s], color='black', ls=':', lw=1.2, label='MMSE($p_0$)')
-        ax.axhline(mmse_pbar0[s], color='gray', ls='--', lw=1.2, label='MMSE($\\bar p_0$)')
+        ax.axhline(floor_free[s], color='dimgray', ls='--', lw=1.4,
+                   label='floor$_{\\mathrm{free}}$ (equiv + free bias)')
+        ax.axhline(mmse_pbar0[s], color='silver', ls=':', lw=1.1,
+                   label='MMSE($\\bar p_0$) [strict-equiv only]')
         ax.set_xscale('log'); ax.set_xlabel('k / d'); ax.set_ylabel('MSE')
         ax.set_title(f'σ={s}   (red ring = circ beats dense)'); ax.grid(True, alpha=.3)
         if col == nS - 1:
             ax.legend(fontsize=6.5, loc='upper right')
         ax2 = axes[1, col]
         A_dense = ld - mmse_p0[s]
-        dstat = mmse_pbar0[s] - mmse_p0[s]
+        dstat = floor_free[s] - mmse_p0[s]
         for wi, w in enumerate(W_BAND_LIST):
-            A_circ = np.array(L_circ[w][s]) - mmse_pbar0[s]
+            A_circ = np.array(L_circ[w][s]) - floor_free[s]
             ax2.plot(kd, A_dense - A_circ, color=wcolors[wi], lw=1.6, marker='d', ms=3.5,
                      label=f'w={w}')
         ax2.axhline(dstat, color='gray', ls='--', lw=1.6, label='$\\Delta_{\\mathrm{stat}}$ (win threshold)')
@@ -238,7 +262,7 @@ def run_one(m_active):
     print(f"  Saved {out}")
 
     return dict(m_active=m_active, kd=kd, L_dense=L_dense, L_circ=L_circ,
-                mmse_p0=mmse_p0, mmse_pbar0=mmse_pbar0)
+                mmse_p0=mmse_p0, mmse_pbar0=mmse_pbar0, floor_free=floor_free)
 
 
 def main():
@@ -258,6 +282,7 @@ def main():
                 sd[f'L_circ_m{m}_w{w}_s{s}'] = np.array(r['L_circ'][w][s])
             sd[f'mmse_p0_m{m}_s{s}']    = r['mmse_p0'][s]
             sd[f'mmse_pbar0_m{m}_s{s}'] = r['mmse_pbar0'][s]
+            sd[f'floor_free_m{m}_s{s}'] = r['floor_free'][s]
     np.savez('tables/rf_circulant_win.npz', **sd)
 
     # ---- trend summary: min gap vs filter width w (and vs m_active) ----

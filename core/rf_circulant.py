@@ -33,6 +33,7 @@ Only k divisible by d is meaningful (a whole number of d x d blocks).
 import numpy as np
 
 from .rf_gmm_estimators import stein_covariances
+from .gmm import _c0
 
 
 # ---------------------------------------------------------------------------
@@ -100,11 +101,32 @@ def _dft_matrix(d):
     return np.exp(-2j * np.pi * np.outer(j, j) / d) / np.sqrt(d)
 
 
-def circulant_rf_mmse(x0, U, Theta, Gamma, sigma, lam, conditional=True):
+def circulant_rf_mmse(x0, U, Theta, Gamma, sigma, lam, conditional=True,
+                      equivariant_bias=False):
     """L^circ for the empirical distribution: block-circulant W on block-circulant
     features. Theta must already be block-circulant (build_circulant_theta). Uses the
-    Stein noise-marginalised Cov(x0,phi) and Sigma_phi, then the per-frequency c x c
-    solve. Returns Tr(Sigma_p0) - sum_f Re(q_f^H P_f^{-1} q_f)."""
+    Stein noise-marginalised Cov(x0,phi) and Sigma_phi, then the per-frequency c x c solve.
+
+    equivariant_bias : constrain the readout bias b to be SHIFT-INVARIANT (b = beta * 1).
+        False (DEFAULT): free readout — b unconstrained in R^d. More expressive; this is
+              the usual affine-ridge setup. NOTE the matching floor is then NOT
+              MMSE(pbar0) but the strictly lower free-bias floor from
+              core.equivariant_floor.mmse_equivariant_floors()['floor_free'] — a free
+              per-position bias breaks equivariance and lets the model exploit the
+              non-stationary mean mu_p0. Using MMSE(pbar0) here produces apparent
+              "below the floor" violations.
+        True : b = beta * 1, so D(y) = W phi(y) + b is genuinely shift-equivariant
+              (a real conv net has one bias per channel, shared across positions). Only
+              then is MMSE(pbar0) the valid floor: L_p0(D) = L_pbar0(D) >= MMSE(pbar0).
+
+    Math for equivariant_bias=True. With b = beta*1 and optimal beta,
+        L = [Tr(Sig_p0) - 2Tr(W Cov^T) + Tr(W Sig_phi W^T)] + ||(I-P_1)(W mu_phi - mu_x)||^2
+    where P_1 = (1/d) 11^T. The penalty is DIAGONAL in frequency (it just drops the DC
+    bin), so the per-frequency solve survives with
+        P_f -> P_f + mphi_f mphi_f^H ,   q_f -> q_f + mphi_f * conj(mx_f)   (f != 0)
+    plus the constant sum_{f!=0} |mx_f|^2. The f=0 (DC) bin is unmodified — a constant
+    bias is still free there.
+    """
     Cov, Sig, trace_p0 = stein_covariances(x0, U, Theta, Gamma, sigma, lam, conditional)
     d = x0.shape[1]
     k = Theta.shape[0]
@@ -120,6 +142,16 @@ def circulant_rf_mmse(x0, U, Theta, Gamma, sigma, lam, conditional=True):
     CovT4 = Cov.T.reshape(c, d, d)                       # [a,p,q] = Cov(phi_{a,p}, x0_q)
     Qblocks = np.einsum('fp,apq,fq->fa', F, CovT4, Fc, optimize=True)    # (d, c)
 
+    const = 0.0
+    if equivariant_bias:
+        mu_phi, mu_x = _stein_means(x0, U, Theta, Gamma, sigma, conditional)
+        mphi_f = (F @ mu_phi.reshape(c, d).T)            # (d, c): DFT of each block's mean
+        mx_f = F @ mu_x                                  # (d,)
+        for f in range(1, d):                            # skip DC (f=0): const bias free there
+            Pblocks[f] = Pblocks[f] + np.outer(mphi_f[f], mphi_f[f].conj())
+            Qblocks[f] = Qblocks[f] + mphi_f[f] * np.conj(mx_f[f])
+            const += float(np.abs(mx_f[f]) ** 2)
+
     expl = 0.0
     for f in range(d):
         Pf = Pblocks[f]                                  # (c, c) Hermitian PD (lam on diag)
@@ -129,7 +161,15 @@ def circulant_rf_mmse(x0, U, Theta, Gamma, sigma, lam, conditional=True):
         except np.linalg.LinAlgError:
             sol = np.linalg.lstsq(Pf, qf, rcond=None)[0]
         expl += float(np.real(np.vdot(qf, sol)))         # q^H P^{-1} q (real)
-    return max(0.0, trace_p0 - expl)
+    return max(0.0, trace_p0 + const - expl)
+
+
+def _stein_means(x0, U, Theta, Gamma, sigma, conditional=True):
+    """(mu_phi, mu_x): noise-marginalised feature mean E[phi] (k,) and data mean (d,).
+    mu_phi uses the same Gaussian-smoothed ReLU c0(M,s) as stein_covariances."""
+    s = sigma * np.linalg.norm(Theta, axis=1)                       # (k,)
+    M = x0 @ Theta.T + (U @ Gamma.T if conditional else 0.0)        # (N, k)
+    return _c0(M, s[None, :]).mean(0), x0.mean(0)
 
 
 # ---------------------------------------------------------------------------
@@ -163,13 +203,35 @@ def _bruteforce_circ_loss(Cov, Sig, trace_p0, c, d):
     return trace_p0 - float(lin @ t)
 
 
+def _bruteforce_circ_loss_eqbias(Cov, Sig, trace_p0, mu_phi, mu_x, c, d):
+    """Brute-force optimum over block-circulant W with a SHIFT-INVARIANT bias b=beta*1:
+      L = Tr(Sp0) - 2Tr(W Cov^T) + Tr(W Sig W^T) + ||(I - P_1)(W mu_phi - mu_x)||^2 .
+    Still quadratic in the c*d real DOF -> linear solve."""
+    k = c * d
+    B = np.zeros((k, d, k))
+    for a in range(c):
+        for r in range(d):
+            w = np.zeros(d); w[r] = 1.0
+            B[a * d + r][:, a * d:(a + 1) * d] = _circulant_from_row(w)
+    P1 = np.ones((d, d)) / d
+    ImP = np.eye(d) - P1
+    # g_m = (I-P1) B_m mu_phi  (d,);  target (I-P1) mu_x
+    g = np.stack([ImP @ (B[m] @ mu_phi) for m in range(k)])          # (k, d)
+    t_x = ImP @ mu_x                                                  # (d,)
+    lin = np.array([np.trace(B[m] @ Cov.T) for m in range(k)]) + g @ t_x
+    Hess = np.array([[np.trace(B[m] @ Sig @ B[n].T) for n in range(k)]
+                     for m in range(k)]) + g @ g.T
+    t = np.linalg.solve(Hess, lin)
+    return trace_p0 + float(t_x @ t_x) - float(lin @ t)
+
+
 def _selftest():
     rng = np.random.default_rng(0)
     d, c = 4, 3
     k = c * d
     N = 200
     sigma, lam = 1.0, 1e-6
-    x0 = rng.standard_normal((N, d)) * np.array([1.5, 1.0, 0.6, 0.3])
+    x0 = rng.standard_normal((N, d)) * np.array([1.5, 1.0, 0.6, 0.3]) + np.array([0.7, -0.4, 0.2, 0.9])
     labels = rng.integers(0, 2, N)
     U = np.eye(2)[labels]
     for cond in (False, True):
@@ -177,11 +239,18 @@ def _selftest():
         Gamma = build_circulant_gamma(k, d, 2, np.random.default_rng(2)) if cond \
             else np.zeros((k, 2))
         Cov, Sig, trace_p0 = stein_covariances(x0, U, Theta, Gamma, sigma, lam, cond)
-        freq = circulant_rf_mmse(x0, U, Theta, Gamma, sigma, lam, cond)
+        # (a) free per-position bias (legacy)
+        freq = circulant_rf_mmse(x0, U, Theta, Gamma, sigma, lam, cond, equivariant_bias=False)
         brute = _bruteforce_circ_loss(Cov, Sig, trace_p0, c, d)
-        print(f"cond={cond}: freq-domain L^circ={freq:.8f}  brute-force={brute:.8f}  "
-              f"|diff|={abs(freq - brute):.2e}")
-        assert abs(freq - brute) < 1e-6, "frequency-domain L^circ != brute-force optimum"
+        print(f"cond={cond} free-bias : freq={freq:.8f}  brute={brute:.8f}  |diff|={abs(freq-brute):.2e}")
+        assert abs(freq - brute) < 1e-6, "free-bias L^circ != brute-force optimum"
+        # (b) shift-invariant bias (correct, equivariant)
+        mu_phi, mu_x = _stein_means(x0, U, Theta, Gamma, sigma, cond)
+        freq_e = circulant_rf_mmse(x0, U, Theta, Gamma, sigma, lam, cond, equivariant_bias=True)
+        brute_e = _bruteforce_circ_loss_eqbias(Cov, Sig, trace_p0, mu_phi, mu_x, c, d)
+        print(f"cond={cond} eq-bias   : freq={freq_e:.8f}  brute={brute_e:.8f}  |diff|={abs(freq_e-brute_e):.2e}")
+        assert abs(freq_e - brute_e) < 1e-6, "equivariant-bias L^circ != brute-force optimum"
+        assert freq_e >= freq - 1e-9, "equivariant-bias loss must be >= free-bias loss"
     print("rf_circulant self-test PASSED")
 
 

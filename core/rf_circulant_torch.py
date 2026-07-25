@@ -10,7 +10,7 @@ core.rf_circulant.circulant_rf_mmse.
 import numpy as np
 import torch
 
-from .rf_gmm_estimators_torch import stein_covariances_t
+from .rf_gmm_estimators_torch import stein_covariances_t, _c0_t, _to
 
 
 def _dft_matrix_t(d, device, dtype):
@@ -20,8 +20,14 @@ def _dft_matrix_t(d, device, dtype):
 
 
 def circulant_rf_mmse_t(x0, U, Theta, Gamma, sigma, lam, conditional=True,
-                        device='cuda', dtype=torch.float64):
-    """GPU port of core.rf_circulant.circulant_rf_mmse. Theta must be block-circulant."""
+                        device='cuda', dtype=torch.float64, equivariant_bias=False):
+    """GPU port of core.rf_circulant.circulant_rf_mmse. Theta must be block-circulant.
+
+    equivariant_bias : False (default) = free readout bias in R^d; the matching floor is
+        then core.equivariant_floor's 'floor_free', NOT MMSE(pbar0). True = b = beta*1,
+        genuinely shift-equivariant, for which MMSE(pbar0) IS the floor. See the numpy
+        version for the math.
+    """
     Cov, Sig, trace_p0 = stein_covariances_t(x0, U, Theta, Gamma, sigma, lam,
                                              conditional, device, dtype)
     d = Cov.shape[0]
@@ -38,7 +44,26 @@ def circulant_rf_mmse_t(x0, U, Theta, Gamma, sigma, lam, conditional=True,
     CovT4 = Cov.T.reshape(c, d, d).to(cdtype)                           # [a,p,q]
     Qblocks = torch.einsum('fp,apq,fq->fa', F, CovT4, Fc)              # (d, c)
 
+    const = 0.0
+    if equivariant_bias:
+        mu_phi, mu_x = _stein_means_t(x0, U, Theta, Gamma, sigma, conditional, device, dtype)
+        mphi_f = (F @ mu_phi.reshape(c, d).T.to(cdtype))                # (d, c)
+        mx_f = F @ mu_x.to(cdtype)                                      # (d,)
+        # skip DC (f=0): a constant bias is free there
+        Pblocks[1:] = Pblocks[1:] + mphi_f[1:].unsqueeze(-1) * mphi_f[1:].conj().unsqueeze(-2)
+        Qblocks[1:] = Qblocks[1:] + mphi_f[1:] * mx_f[1:].conj().unsqueeze(-1)
+        const = float((mx_f[1:].abs() ** 2).sum())
+
     # Batched solve over the d frequencies: sol_f = P_f^{-1} q_f
     sol = torch.linalg.solve(Pblocks, Qblocks.unsqueeze(-1)).squeeze(-1)   # (d, c)
     expl = torch.real(torch.sum(Qblocks.conj() * sol))                     # sum_f q_f^H P_f^{-1} q_f
-    return max(0.0, trace_p0 - float(expl))
+    return max(0.0, trace_p0 + const - float(expl))
+
+
+def _stein_means_t(x0, U, Theta, Gamma, sigma, conditional, device, dtype):
+    """(mu_phi, mu_x): noise-marginalised feature mean E[phi] (k,) and data mean (d,)."""
+    x0 = _to(x0, device, dtype); Theta = _to(Theta, device, dtype)
+    Gamma = _to(Gamma, device, dtype); U = _to(U, device, dtype)
+    s = sigma * torch.linalg.norm(Theta, dim=1)                          # (k,)
+    M = x0 @ Theta.T + (U @ Gamma.T if conditional else 0.0)             # (N, k)
+    return _c0_t(M, s[None, :]).mean(0), x0.mean(0)
