@@ -67,3 +67,45 @@ def _stein_means_t(x0, U, Theta, Gamma, sigma, conditional, device, dtype):
     s = sigma * torch.linalg.norm(Theta, dim=1)                          # (k,)
     M = x0 @ Theta.T + (U @ Gamma.T if conditional else 0.0)             # (N, k)
     return _c0_t(M, s[None, :]).mean(0), x0.mean(0)
+
+
+def circulant_rf_mmse_pop_t(gmm, Theta, Gamma, sigma, lam=1e-4, n_max=6,
+                            conditional=False, device='cuda', dtype=torch.float64,
+                            equivariant_bias=False):
+    """L^circ from EXACT POPULATION moments of the GMM (no sampling error).
+
+    Same per-frequency solve as circulant_rf_mmse_t, but Cov(x0,phi) and Sigma_phi come
+    from the exact per-component Stein/Hermite population theory
+    (core.rf_gmm_estimators_torch.mmse_theory_gmm_pop_t) instead of an empirical sample.
+
+    Why this matters: with an empirical sample of size N the measured L^circ is the loss
+    on p0_emp, whose Tr(Sigma) differs from the population by O(1/sqrt(N)). At large sigma
+    the loss is ~Tr(Sigma) - small, so that deficit propagates almost 1:1 and L^circ can
+    appear to fall below a POPULATION-computed floor purely as a finite-sample artefact
+    (seen at sigma=5: Tr deficit 0.066 at N=16000). Using population moments on both sides
+    makes the floor comparison exact.
+    """
+    from .rf_gmm_estimators_torch import mmse_theory_gmm_pop_t
+    Cov, Sig, trace_p0, mu_phi, mu_x = mmse_theory_gmm_pop_t(
+        gmm, Theta, Gamma, sigma, lam=lam, n_max=n_max, conditional=conditional,
+        device=device, dtype=dtype, return_covs=True)
+    d = Cov.shape[0]; k = Sig.shape[0]; c = k // d
+    cdtype = torch.complex128 if dtype == torch.float64 else torch.complex64
+    F = _dft_matrix_t(d, device, dtype).to(cdtype); Fc = F.conj()
+
+    Sig4 = Sig.reshape(c, d, c, d).to(cdtype)
+    Pblocks = torch.einsum('fp,apbq,fq->fab', F, Sig4, Fc)
+    CovT4 = Cov.T.reshape(c, d, d).to(cdtype)
+    Qblocks = torch.einsum('fp,apq,fq->fa', F, CovT4, Fc)
+
+    const = 0.0
+    if equivariant_bias:
+        mphi_f = (F @ mu_phi.reshape(c, d).T.to(cdtype))
+        mx_f = F @ mu_x.to(cdtype)
+        Pblocks[1:] = Pblocks[1:] + mphi_f[1:].unsqueeze(-1) * mphi_f[1:].conj().unsqueeze(-2)
+        Qblocks[1:] = Qblocks[1:] + mphi_f[1:] * mx_f[1:].conj().unsqueeze(-1)
+        const = float((mx_f[1:].abs() ** 2).sum())
+
+    sol = torch.linalg.solve(Pblocks, Qblocks.unsqueeze(-1)).squeeze(-1)
+    expl = torch.real(torch.sum(Qblocks.conj() * sol))
+    return max(0.0, trace_p0 + const - float(expl))

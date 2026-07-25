@@ -46,7 +46,7 @@ N_NOISE  = int(os.environ.get('N_NOISE', '3'))
 BATCH    = int(os.environ.get('BATCH', '256'))
 LAM      = float(os.environ.get('LAM', '1e-2'))
 
-SIGMA_PIXEL_GRID = np.logspace(np.log10(0.02), np.log10(5.0), 20)
+SIGMA_PIXEL_GRID = np.logspace(np.log10(0.01), np.log10(100.0), 30)
 
 # Each entry: (enc/dec, block_name, short_label)
 PROBE_LAYERS = [
@@ -266,8 +266,8 @@ def main():
     print(f"  edm_uncond    : {all_results['edm_uncond'][mid]:.5f}")
     for dict_name, block_name, layer_label in PROBE_LAYERS:
         lk = f'{dict_name}.{block_name}'
-        ns = all_results.get(f'{lk}_noskip', [np.nan]*20)[mid]
-        sk = all_results.get(f'{lk}_skip',   [np.nan]*20)[mid]
+        ns = all_results.get(f'{lk}_noskip', [np.nan]*len(SIGMA_PIXEL_GRID))[mid]
+        sk = all_results.get(f'{lk}_skip',   [np.nan]*len(SIGMA_PIXEL_GRID))[mid]
         print(f"  {layer_label:40s}  ns={ns:.5f}  sk={sk:.5f}")
 
     # Plot
@@ -276,9 +276,16 @@ def main():
     fig.suptitle(f'EDM Layer Linear Probe — CIFAR-10  N={N}, N_noise={N_NOISE}, λ={LAM}')
     colors = plt.cm.viridis(np.linspace(0.1, 0.9, len(PROBE_LAYERS)))
 
+    ref = all_results['linear_wiener']
+
     for ax_idx, ax in enumerate(axes):
-        ax.plot(sigma_arr, all_results['linear_wiener'], 'k--', lw=2, label='Linear Wiener')
-        ax.plot(sigma_arr, all_results['edm_uncond'],    'r-',  lw=2.5, label='Full EDM UNet')
+        if ax_idx == 0:
+            ax.plot(sigma_arr, ref,                       'k--', lw=2,   label='Linear Wiener')
+            ax.plot(sigma_arr, all_results['edm_uncond'], 'r-',  lw=2.5, label='Full EDM UNet')
+        else:
+            # panel 2: gains over linear Wiener (positive = better than Wiener)
+            ax.axhline(0, color='k', lw=1.2, ls='--', label='Linear Wiener (ref=0)')
+            ax.plot(sigma_arr, ref - all_results['edm_uncond'], 'r-', lw=2.5, label='Full EDM UNet')
 
         for ci, (dict_name, block_name, layer_label) in enumerate(PROBE_LAYERS):
             lk = f'{dict_name}.{block_name}'
@@ -288,17 +295,14 @@ def main():
                 if key not in all_results:
                     continue
                 vals = all_results[key]
-                ref  = all_results['linear_wiener']
                 y    = vals if ax_idx == 0 else ref - vals
                 short = layer_label.split('(')[0].strip()
                 ax.plot(sigma_arr, y, color=colors[ci], ls=ls, lw=1.5,
                         label=f'{short} [{slabel}]')
 
-        if ax_idx == 1:
-            ax.axhline(0, color='k', lw=0.8, ls=':')
         ax.set_xscale('log')
         ax.set_xlabel('sigma (pixel units)')
-        ax.set_ylabel('MSE' if ax_idx == 0 else 'L_Wiener − L_probe')
+        ax.set_ylabel('MSE' if ax_idx == 0 else 'L_Wiener − L_probe  (gain)')
         ax.set_title('Layer probe MSE' if ax_idx == 0 else 'Gain over linear Wiener')
         ax.legend(fontsize=6, ncol=2)
         ax.grid(True, alpha=0.3)

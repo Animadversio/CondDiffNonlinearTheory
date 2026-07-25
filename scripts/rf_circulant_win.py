@@ -71,13 +71,27 @@ M_ACTIVE_LIST = [int(x) for x in os.environ.get('M_ACTIVE', '3,8,14,20,26').spli
 # all d coords weighted equally, so no locality advantage). Only L^circ depends on w —
 # L^dense, MMSE(p0), MMSE(pbar0), Delta_stat are all w-independent.
 W_BAND_LIST = [int(x) for x in os.environ.get('W_BAND', '2,4,8,16,32').split(',')]
+# Use EXACT POPULATION moments for both L^dense and L^circ (default) instead of an
+# empirical N_POP sample. With a finite sample, Tr(Sigma_emp) differs from the population
+# by O(1/sqrt(N)); at large sigma the loss is ~Tr(Sigma) - small, so that deficit
+# propagates ~1:1 and L can dip below a POPULATION-computed floor as a pure finite-sample
+# artefact (observed at sigma=5: Tr deficit 0.066 at N=16000). Population moments on both
+# sides make the floor comparison exact. POP_MOMENTS=0 restores the sampled version.
+POP_MOMENTS = os.environ.get('POP_MOMENTS', '1') == '1'
 
 DEVICE = os.environ.get('DEVICE', 'cpu')
 if DEVICE == 'cuda':
     import torch
     from core.rf_gmm_estimators_torch import stein_finiteN_mmse_t
-    from core.rf_circulant_torch import circulant_rf_mmse_t
+    from core.rf_circulant_torch import circulant_rf_mmse_t, circulant_rf_mmse_pop_t
+    from core.rf_gmm_estimators_torch import mmse_theory_gmm_pop_t
     _DT = torch.float64
+    def _dense_pop(gmm, Th, s):
+        return mmse_theory_gmm_pop_t(gmm, Th, np.zeros((Th.shape[0], N_CLASSES)), s,
+                                     lam=LAM, conditional=False, device='cuda', dtype=_DT)
+    def _circ_pop(gmm, Th, s):
+        return circulant_rf_mmse_pop_t(gmm, Th, np.zeros((Th.shape[0], N_CLASSES)), s,
+                                       lam=LAM, conditional=False, device='cuda', dtype=_DT)
     def _dense(x0, U, Th, s):
         return stein_finiteN_mmse_t(x0, U, Th, np.zeros((Th.shape[0], N_CLASSES)), s, LAM,
                                     conditional=False, device='cuda', dtype=_DT)
@@ -175,7 +189,7 @@ def run_one(m_active):
     mmse_p0, mmse_pbar0, floor_free = {}, {}, {}
     rng_mc = np.random.default_rng(SEED + 11)
     for s in SIGMA_VALUES:
-        fl = mmse_equivariant_floors(gmm, s, N_mc=min(N_MC_EXACT, 60_000), rng=rng_mc)
+        fl = mmse_equivariant_floors(gmm, s, N_mc=max(N_MC_EXACT, 200_000), rng=rng_mc)
         mmse_p0[s]    = fl['mmse_p0']
         mmse_pbar0[s] = fl['mmse_pbar0']
         floor_free[s] = fl['floor_free']
@@ -192,10 +206,16 @@ def run_one(m_active):
         circ_Th = {w: [build_circulant_theta(k, D, rng_proj, w=w) for _ in range(N_REP)]
                    for w in W_BAND_LIST}
         for s in SIGMA_VALUES:
-            L_dense[s].append(float(np.mean([_dense(x0_pop, U_pop, Th, s) for Th in dense_Th])))
-            for w in W_BAND_LIST:
-                L_circ[w][s].append(float(np.mean([_circ(x0_pop, U_pop, Th, s)
-                                                   for Th in circ_Th[w]])))
+            if POP_MOMENTS:
+                L_dense[s].append(float(np.mean([_dense_pop(gmm, Th, s) for Th in dense_Th])))
+                for w in W_BAND_LIST:
+                    L_circ[w][s].append(float(np.mean([_circ_pop(gmm, Th, s)
+                                                       for Th in circ_Th[w]])))
+            else:
+                L_dense[s].append(float(np.mean([_dense(x0_pop, U_pop, Th, s) for Th in dense_Th])))
+                for w in W_BAND_LIST:
+                    L_circ[w][s].append(float(np.mean([_circ(x0_pop, U_pop, Th, s)
+                                                       for Th in circ_Th[w]])))
 
     kd = np.array(K_CIRC) / D
     print(f"  Win set {{k : L^circ<L^dense}} (m_active={m_active}), by filter width w:")
@@ -268,7 +288,7 @@ def run_one(m_active):
 def main():
     print(f"[circulant-win] d={D}, K_CIRC={K_CIRC}, N_POP={N_POP}, N_REP={N_REP}, "
           f"DEVICE={DEVICE}, sigmas={SIGMA_VALUES}, M_ACTIVE={M_ACTIVE_LIST}, "
-          f"W_BAND={W_BAND_LIST}")
+          f"W_BAND={W_BAND_LIST}, POP_MOMENTS={POP_MOMENTS}")
     results = [run_one(m) for m in M_ACTIVE_LIST]
 
     os.makedirs('tables', exist_ok=True)

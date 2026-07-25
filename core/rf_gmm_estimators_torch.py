@@ -197,6 +197,10 @@ def mmse_theory_joint_gaussian_t(Sigma_p0, mu_x0, Theta, Gamma, sigma,
         Sigma_phi = Sigma_phi + 6.0 * r_tilde ** 3 * torch.outer(C3, C3)
     Sigma_phi = Sigma_phi + lam * torch.eye(k, device=device, dtype=dtype)
 
+    if return_covs:
+        # exact POPULATION moments, for callers that need the raw covariances
+        # (e.g. the circulant per-frequency solve). mu_phi is the population feature mean.
+        return Cov, Sigma_phi, trace_p0, mu_phi, mu
     expl = float(torch.trace(Cov @ torch.linalg.solve(Sigma_phi, Cov.T)))
     return max(0.0, trace_p0 - expl)
 
@@ -206,7 +210,8 @@ def mmse_theory_joint_gaussian_t(Sigma_p0, mu_x0, Theta, Gamma, sigma,
 # ---------------------------------------------------------------------------
 
 def mmse_theory_gmm_pop_t(gmm, Theta, Gamma, sigma, lam=1e-4, n_max=6,
-                           conditional=True, device='cuda', dtype=torch.float64):
+                           conditional=True, device='cuda', dtype=torch.float64,
+                           return_covs=False):
     """
     GPU port of core.gmm.mmse_theory_gmm_pop. Fully vectorized over C components.
     See that function for math documentation.
@@ -304,5 +309,9 @@ def mmse_theory_gmm_pop_t(gmm, Theta, Gamma, sigma, lam=1e-4, n_max=6,
 
     Sigma_phi = Sigma_phi + lam * torch.eye(k, device=device, dtype=dtype)
 
+    if return_covs:
+        # exact POPULATION moments, for callers that need the raw covariances
+        # (e.g. the circulant per-frequency solve). mu_phi is the population feature mean.
+        return Cov, Sigma_phi, trace_p0, mu_phi, mu
     expl = float(torch.trace(Cov @ torch.linalg.solve(Sigma_phi, Cov.T)))
     return max(0.0, trace_p0 - expl)
