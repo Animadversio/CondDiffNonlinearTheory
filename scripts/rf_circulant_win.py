@@ -53,6 +53,13 @@ K_CIRC = [2 ** i for i in range(3, 16) if 2 ** i <= K_MAX and (2 ** i) % D == 0]
 # Comma-separated -> sweep. Signal budget is normalised (below) so total mean
 # separation and anisotropic variance are m-independent, isolating effective dim.
 M_ACTIVE_LIST = [int(x) for x in os.environ.get('M_ACTIVE', '3,8,14,20,26').split(',')]
+# Filter bandwidth sweep: support width w of the circulant generating kernel h_a.
+# w<d gives a LOCAL (banded) filter — the true conv analogue, each feature reads a
+# length-w window; h_a[:w] ~ N(0,I/w) keeps E||h_a||^2=1 so row norms match dense for
+# every w. w=d is the original full-width kernel (shift-equivariant but non-local:
+# all d coords weighted equally, so no locality advantage). Only L^circ depends on w —
+# L^dense, MMSE(p0), MMSE(pbar0), Delta_stat are all w-independent.
+W_BAND_LIST = [int(x) for x in os.environ.get('W_BAND', '2,4,8,16,32').split(',')]
 
 DEVICE = os.environ.get('DEVICE', 'cpu')
 if DEVICE == 'cuda':
@@ -155,23 +162,34 @@ def run_one(m_active):
         print(f"  σ={s}: MMSE(p0)={mmse_p0[s]:.4f}  MMSE(pbar0)={mmse_pbar0[s]:.4f}  "
               f"Δ_stat={mmse_pbar0[s]-mmse_p0[s]:.4f}")
 
+    # L_dense / floors are w-independent; L_circ is swept over filter bandwidth w.
     L_dense = {s: [] for s in SIGMA_VALUES}
-    L_circ  = {s: [] for s in SIGMA_VALUES}
+    L_circ  = {w: {s: [] for s in SIGMA_VALUES} for w in W_BAND_LIST}
     rng_proj = np.random.default_rng(SEED + 100)
     for k in tqdm(K_CIRC, desc=f'k (m={m_active})'):
         dense_Th = [rng_proj.standard_normal((k, D)) / np.sqrt(D) for _ in range(N_REP)]
-        circ_Th  = [build_circulant_theta(k, D, rng_proj) for _ in range(N_REP)]
+        circ_Th = {w: [build_circulant_theta(k, D, rng_proj, w=w) for _ in range(N_REP)]
+                   for w in W_BAND_LIST}
         for s in SIGMA_VALUES:
             L_dense[s].append(float(np.mean([_dense(x0_pop, U_pop, Th, s) for Th in dense_Th])))
-            L_circ[s].append(float(np.mean([_circ(x0_pop, U_pop, Th, s) for Th in circ_Th])))
+            for w in W_BAND_LIST:
+                L_circ[w][s].append(float(np.mean([_circ(x0_pop, U_pop, Th, s)
+                                                   for Th in circ_Th[w]])))
 
     kd = np.array(K_CIRC) / D
-    print(f"  Win set {{k : L^circ<L^dense}} (m_active={m_active}):")
+    print(f"  Win set {{k : L^circ<L^dense}} (m_active={m_active}), by filter width w:")
     for s in SIGMA_VALUES:
-        ld = np.array(L_dense[s]); lc = np.array(L_circ[s])
-        win = [int(k) for k, a, b in zip(K_CIRC, lc, ld) if a < b]
-        print(f"    σ={s}: win_k={win if win else 'none'}  "
-              f"(min L^circ-L^dense={np.min(lc-ld):+.4f} at k={K_CIRC[int(np.argmin(lc-ld))]})")
+        ld = np.array(L_dense[s])
+        row = []
+        for w in W_BAND_LIST:
+            lc = np.array(L_circ[w][s])
+            gap = np.min(lc - ld)
+            win = [int(k) for k, a, b in zip(K_CIRC, lc, ld) if a < b]
+            row.append(f"w={w}:{gap:+.3f}{'*' if win else ''}")
+        best_w = W_BAND_LIST[int(np.argmin([np.min(np.array(L_circ[w][s]) - ld)
+                                            for w in W_BAND_LIST]))]
+        print(f"    σ={s}: min(L^circ-L^dense) by w -> {'  '.join(row)}   [best w={best_w}]"
+              f"   (* = win region exists)")
 
     # detailed per-σ figure
     nS = len(SIGMA_VALUES)
@@ -180,36 +198,39 @@ def run_one(m_active):
     fig.suptitle(f'Circulant vs dense nonlinear RF denoiser (newfile5 §4) — GMM d={D}, C={N_CLASSES}, '
                  f'{m_active} active coords (non-stationary)\n'
                  f'population proxy N={N_POP}, {N_REP} projection draws averaged', fontsize=11)
+    wcolors = plt.cm.viridis(np.linspace(0.15, 0.9, len(W_BAND_LIST)))
     for col, s in enumerate(SIGMA_VALUES):
-        ld = np.array(L_dense[s]); lc = np.array(L_circ[s])
+        ld = np.array(L_dense[s])
         ax = axes[0, col]
-        ax.plot(kd, ld, color='teal', lw=2, marker='o', ms=4, label='$\\mathcal{L}^{\\mathrm{dense}}$ (unconstrained W)')
-        ax.plot(kd, lc, color='darkviolet', lw=2, marker='s', ms=4, label='$\\mathcal{L}^{\\mathrm{circ}}$ (circulant W)')
+        ax.plot(kd, ld, color='teal', lw=2.4, marker='o', ms=4,
+                label='$\\mathcal{L}^{\\mathrm{dense}}$ (unconstrained W)')
+        for wi, w in enumerate(W_BAND_LIST):
+            lc = np.array(L_circ[w][s])
+            ax.plot(kd, lc, color=wcolors[wi], lw=1.6, marker='s', ms=3.5,
+                    label=f'$\\mathcal{{L}}^{{\\mathrm{{circ}}}}$ w={w}' + (' (full)' if w >= D else ''))
+            win_mask = lc < ld
+            if win_mask.any():
+                ax.scatter(kd[win_mask], lc[win_mask], s=90, facecolors='none',
+                           edgecolors='red', lw=1.8, zorder=5)
         ax.axhline(mmse_p0[s], color='black', ls=':', lw=1.2, label='MMSE($p_0$)')
         ax.axhline(mmse_pbar0[s], color='gray', ls='--', lw=1.2, label='MMSE($\\bar p_0$)')
-        win_mask = lc < ld
-        if win_mask.any():
-            ax.scatter(kd[win_mask], lc[win_mask], s=90, facecolors='none',
-                       edgecolors='red', lw=1.8, zorder=5, label='win (circ<dense)')
         ax.set_xscale('log'); ax.set_xlabel('k / d'); ax.set_ylabel('MSE')
-        ax.set_title(f'σ={s}'); ax.grid(True, alpha=.3)
+        ax.set_title(f'σ={s}   (red ring = circ beats dense)'); ax.grid(True, alpha=.3)
         if col == nS - 1:
-            ax.legend(fontsize=7, loc='upper right')
+            ax.legend(fontsize=6.5, loc='upper right')
         ax2 = axes[1, col]
-        A_dense = ld - mmse_p0[s]; A_circ = lc - mmse_pbar0[s]
+        A_dense = ld - mmse_p0[s]
         dstat = mmse_pbar0[s] - mmse_p0[s]
-        ax2.plot(kd, A_dense - A_circ, color='crimson', lw=2, marker='d', ms=4,
-                 label='$A_{\\mathrm{dense}}(k)-A_{\\mathrm{circ}}(k)$')
-        ax2.axhline(dstat, color='gray', ls='--', lw=1.4, label='$\\Delta_{\\mathrm{stat}}$ (win threshold)')
+        for wi, w in enumerate(W_BAND_LIST):
+            A_circ = np.array(L_circ[w][s]) - mmse_pbar0[s]
+            ax2.plot(kd, A_dense - A_circ, color=wcolors[wi], lw=1.6, marker='d', ms=3.5,
+                     label=f'w={w}')
+        ax2.axhline(dstat, color='gray', ls='--', lw=1.6, label='$\\Delta_{\\mathrm{stat}}$ (win threshold)')
         ax2.axhline(0, color='k', lw=0.6)
-        above = (A_dense - A_circ) > dstat
-        if above.any():
-            ax2.scatter(kd[above], (A_dense - A_circ)[above], s=90, facecolors='none',
-                        edgecolors='red', lw=1.8, zorder=5, label='win region')
-        ax2.set_xscale('log'); ax2.set_xlabel('k / d'); ax2.set_ylabel('excess-risk gap')
+        ax2.set_xscale('log'); ax2.set_xlabel('k / d'); ax2.set_ylabel('$A_{dense}-A_{circ}$')
         ax2.set_title(f'σ={s}: circ wins where gap > Δ_stat'); ax2.grid(True, alpha=.3)
         if col == nS - 1:
-            ax2.legend(fontsize=7, loc='upper right')
+            ax2.legend(fontsize=6.5, loc='upper right')
     fig.tight_layout()
     os.makedirs('figures', exist_ok=True)
     out = f'figures/rf_circulant_win_mact{m_active}.png'
@@ -222,53 +243,69 @@ def run_one(m_active):
 
 def main():
     print(f"[circulant-win] d={D}, K_CIRC={K_CIRC}, N_POP={N_POP}, N_REP={N_REP}, "
-          f"DEVICE={DEVICE}, sigmas={SIGMA_VALUES}, M_ACTIVE={M_ACTIVE_LIST}")
+          f"DEVICE={DEVICE}, sigmas={SIGMA_VALUES}, M_ACTIVE={M_ACTIVE_LIST}, "
+          f"W_BAND={W_BAND_LIST}")
     results = [run_one(m) for m in M_ACTIVE_LIST]
 
     os.makedirs('tables', exist_ok=True)
     sd = {'k_circ': np.array(K_CIRC), 'sigma_values': np.array(SIGMA_VALUES),
-          'm_active_list': np.array(M_ACTIVE_LIST)}
+          'm_active_list': np.array(M_ACTIVE_LIST), 'w_band_list': np.array(W_BAND_LIST)}
     for r in results:
         m = r['m_active']
         for s in SIGMA_VALUES:
             sd[f'L_dense_m{m}_s{s}'] = np.array(r['L_dense'][s])
-            sd[f'L_circ_m{m}_s{s}']  = np.array(r['L_circ'][s])
+            for w in W_BAND_LIST:
+                sd[f'L_circ_m{m}_w{w}_s{s}'] = np.array(r['L_circ'][w][s])
             sd[f'mmse_p0_m{m}_s{s}']    = r['mmse_p0'][s]
             sd[f'mmse_pbar0_m{m}_s{s}'] = r['mmse_pbar0'][s]
     np.savez('tables/rf_circulant_win.npz', **sd)
 
-    # ---- trend summary: does a win open as effective dimension (m_active) grows? ----
-    if len(results) > 1:
-        nS = len(SIGMA_VALUES)
-        fig, axes = plt.subplots(2, nS, figsize=(5 * nS, 8.5))
-        axes = np.asarray(axes).reshape(2, nS)
-        fig.suptitle('Does spreading structure over more coords open a circulant win? '
-                     f'(non-stationary, d={D})\n'
-                     'top: min_k (L^circ−L^dense) vs #active coords (<0 ⇒ win);  '
-                     'bottom: Δ_stat vs #active coords', fontsize=11)
-        ms = np.array([r['m_active'] for r in results])
-        for col, s in enumerate(SIGMA_VALUES):
-            min_gap = np.array([np.min(np.array(r['L_circ'][s]) - np.array(r['L_dense'][s]))
-                                for r in results])
-            dstat = np.array([r['mmse_pbar0'][s] - r['mmse_p0'][s] for r in results])
-            ax = axes[0, col]
-            ax.plot(ms, min_gap, color='crimson', lw=2, marker='o', ms=6)
-            ax.axhline(0, color='k', lw=1.0, ls='--')
-            winm = min_gap < 0
+    # ---- trend summary: min gap vs filter width w (and vs m_active) ----
+    nS = len(SIGMA_VALUES)
+    fig, axes = plt.subplots(2, nS, figsize=(5 * nS, 8.5))
+    axes = np.asarray(axes).reshape(2, nS)
+    fig.suptitle('Does a LOCAL (banded) circulant filter open a win? '
+                 f'(non-stationary GMM, d={D})\n'
+                 'top: min_k (L^circ−L^dense) vs filter width w  (<0 ⇒ win);  '
+                 'bottom: same vs #active coords, at the best w', fontsize=11)
+    ms = np.array([r['m_active'] for r in results])
+    ws = np.array(W_BAND_LIST)
+    mcolors = plt.cm.plasma(np.linspace(0.1, 0.85, len(results)))
+    for col, s in enumerate(SIGMA_VALUES):
+        ax = axes[0, col]
+        for ri, r in enumerate(results):
+            ld = np.array(r['L_dense'][s])
+            gaps = np.array([np.min(np.array(r['L_circ'][w][s]) - ld) for w in W_BAND_LIST])
+            ax.plot(ws, gaps, color=mcolors[ri], lw=1.8, marker='o', ms=5,
+                    label=f"m={r['m_active']}")
+            winm = gaps < 0
             if winm.any():
-                ax.scatter(ms[winm], min_gap[winm], s=110, facecolors='none',
-                           edgecolors='green', lw=2, zorder=5, label='win exists')
-                ax.legend(fontsize=8)
-            ax.set_xlabel('# active coords'); ax.set_ylabel('min_k (L^circ − L^dense)')
-            ax.set_title(f'σ={s}'); ax.grid(True, alpha=.3)
-            ax2 = axes[1, col]
-            ax2.plot(ms, dstat, color='gray', lw=2, marker='s', ms=6)
-            ax2.set_xlabel('# active coords'); ax2.set_ylabel('Δ_stat')
-            ax2.set_title(f'σ={s}: stationarisation penalty'); ax2.grid(True, alpha=.3)
-        fig.tight_layout()
-        out = 'figures/rf_circulant_win_trend.png'
-        fig.savefig(out, dpi=150, bbox_inches='tight'); plt.close(fig)
-        print(f"\nSaved {out}")
+                ax.scatter(ws[winm], gaps[winm], s=110, facecolors='none',
+                           edgecolors='green', lw=2, zorder=5)
+        ax.axhline(0, color='k', lw=1.2, ls='--')
+        ax.set_xscale('log', base=2); ax.set_xlabel('filter width w')
+        ax.set_ylabel('min_k (L^circ − L^dense)')
+        ax.set_title(f'σ={s}  (green ring = win)'); ax.grid(True, alpha=.3)
+        if col == nS - 1:
+            ax.legend(fontsize=7)
+        # bottom: best-over-w gap vs m_active
+        ax2 = axes[1, col]
+        best_gap = np.array([np.min([np.min(np.array(r['L_circ'][w][s]) - np.array(r['L_dense'][s]))
+                                     for w in W_BAND_LIST]) for r in results])
+        ax2.plot(ms, best_gap, color='crimson', lw=2, marker='o', ms=6, label='best over w')
+        full_gap = np.array([np.min(np.array(r['L_circ'][W_BAND_LIST[-1]][s]) - np.array(r['L_dense'][s]))
+                             for r in results])
+        ax2.plot(ms, full_gap, color='gray', lw=1.6, ls='--', marker='s', ms=5,
+                 label=f'full-width w={W_BAND_LIST[-1]}')
+        ax2.axhline(0, color='k', lw=1.2, ls='--')
+        ax2.set_xlabel('# active coords'); ax2.set_ylabel('min_k (L^circ − L^dense)')
+        ax2.set_title(f'σ={s}: locality gain vs effective dim'); ax2.grid(True, alpha=.3)
+        if col == nS - 1:
+            ax2.legend(fontsize=7)
+    fig.tight_layout()
+    out = 'figures/rf_circulant_win_trend.png'
+    fig.savefig(out, dpi=150, bbox_inches='tight'); plt.close(fig)
+    print(f"\nSaved {out}")
 
 
 if __name__ == '__main__':

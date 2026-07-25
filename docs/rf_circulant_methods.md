@@ -108,7 +108,34 @@ of components: `C=3` fixes the number of modes, and the component means span onl
 dims, but the covariances are unconstrained and carry the `m_active`-dim anisotropy that sets
 the RF approximation cost.
 
-Finding: raising `m_active` 3→26 **monotonically narrows** the circulant gap
+**Filter bandwidth sweep (`W_BAND`) — locality.** The full-width kernel `h_a ~ N(0,I/d)` is
+shift-equivariant but **not local**: every one of the `d` coordinates is weighted equally, so
+there is no "emphasise a neighbourhood" inductive bias. `build_circulant_theta(..., w=)`
+instead supports a **banded** kernel — `h_a` supported on its first `w` entries with
+`h_a[:w] ~ N(0, I/w)`, zeros elsewhere — the true conv-layer analogue (each feature reads a
+length-`w` window). Variance `1/w` (not `1/d`) keeps `E‖h_a‖² = 1`, so row norms and the
+pre-activation scale match the dense RF at every `w`. Only `L^circ` depends on `w`;
+`L^dense`, `MMSE(p0)`, `MMSE(p̄0)` and `Δ_stat` are all `w`-independent.
+
+Finding — **locality opens genuine win regions**. Best bandwidth is `w=1` in every
+(σ, m_active) cell, and the gap grows monotonically with `w` (full width `w=d` is the worst
+case). At σ=0.5, `min_k(L^circ − L^dense)`:
+
+| m_active | w=1 | w=2 | w=3 | w=4 | w=8 | w=32 |
+|---|---|---|---|---|---|---|
+| 3  | **−0.317** | +0.386 | +0.332 | +0.298 | +0.600 | +0.668 |
+| 20 | **−1.030** | **−0.617** | **−0.066** | **−0.097** | +0.366 | +0.456 |
+
+Wins sit at small `k/d ≈ 1–4` — exactly the §4 prediction (circulant near its `MMSE(p̄0)`
+floor while dense is still far from `MMSE(p0)`); by `k/d ≳ 10` dense overtakes and the
+difference → `+Δ_stat`. Since `Δ_stat` is `w`-independent, the entire locality gain is
+`A_circ` shrinking: a banded filter reaches its stationary floor with far fewer features,
+each having to resolve only a length-`w` window instead of all `d` coordinates. Locality and
+effective dimension **compound** — `m=20, w=1` (−1.03) is far deeper into the win than either
+`m=3, w=1` (−0.32) or `m=20, w=32` (+0.46). Wins remain confined to low σ: at σ≥1 even `w=1`
+stays positive because `Δ_stat` grows with σ faster than the locality gain.
+
+Finding (full-width kernel): raising `m_active` 3→26 **monotonically narrows** the circulant gap
 `min_k(L^circ−L^dense)` (e.g. σ=1: 2.28→1.42; σ=2: 1.78→1.17) — the dense model loses
 relative ground as its target denoiser function becomes higher-dimensional and needs more
 features — but it does **not** cross zero: under fixed signal power `Δ_stat` stays sizeable

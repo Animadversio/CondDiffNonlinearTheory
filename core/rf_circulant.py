@@ -39,16 +39,30 @@ from .rf_gmm_estimators import stein_covariances
 # Block-circulant projection
 # ---------------------------------------------------------------------------
 
-def build_circulant_theta(k, d, rng):
+def build_circulant_theta(k, d, rng, w=None):
     """Block-circulant Theta (k=c*d rows, d cols). c blocks, each circ(h_a) with
-    h_a ~ N(0, I/d); row (a,tau) = S^tau h_a = np.roll(h_a, tau). Marginal law of
-    every entry is N(0, 1/d), matching the dense RF; only the row-joint differs."""
+    row (a,tau) = S^tau h_a = np.roll(h_a, tau).
+
+    w : filter bandwidth (support width of the generating kernel h_a).
+        w=None or w>=d -> full-width kernel h_a ~ N(0, I/d): every entry marginally
+        N(0,1/d), matching the dense RF; only the row-joint differs. This is
+        shift-equivariant but NOT local — all d coordinates are weighted equally.
+        w<d -> LOCAL (banded) filter: h_a is supported on its first w entries with
+        h_a[:w] ~ N(0, I/w), zeros elsewhere. This is the true conv-layer analogue:
+        each feature reads a length-w window around one coordinate rather than the
+        whole vector. Variance 1/w (not 1/d) keeps E||h_a||^2 = 1, so row norms —
+        and hence the pre-activation scale — match the dense RF for every w.
+    """
     if k % d != 0:
         raise ValueError(f"k={k} not divisible by d={d}; circulant needs whole blocks")
     c = k // d
-    Theta = np.empty((k, d))
+    ww = d if (w is None or w >= d) else int(w)
+    if ww < 1:
+        raise ValueError(f"bandwidth w={w} must be >= 1")
+    Theta = np.zeros((k, d))
     for a in range(c):
-        h = rng.standard_normal(d) / np.sqrt(d)
+        h = np.zeros(d)
+        h[:ww] = rng.standard_normal(ww) / np.sqrt(ww)   # E||h||^2 = 1 for any w
         for tau in range(d):
             Theta[a * d + tau] = np.roll(h, tau)     # (S^tau h)_i = h_{i-tau mod d}
     return Theta
