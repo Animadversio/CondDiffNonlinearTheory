@@ -296,8 +296,15 @@ def main():
 # ---------------------------------------------------------------------------
 # Save
 # ---------------------------------------------------------------------------
+def _outdir(kind):
+    """Per-dimension output dir, e.g. figures/rf_gmm_finite_sample/d32/. Keeps d=8 and
+    d=32 runs from overwriting each other's figures/tables (they share N_train names)."""
+    p = os.path.join(kind, 'rf_gmm_finite_sample', f'd{D}')
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
 def _save_table(N_train, res, emp_base, pop_base, trace_p0_emp):
-    os.makedirs('tables', exist_ok=True)
     sd = {'k_grid': np.array(K_GRID), 'sigma_values': np.array(SIGMA_VALUES),
           'N_train': N_train, 'trace_p0_emp': trace_p0_emp}
     for sg in SIGMA_VALUES:
@@ -308,8 +315,9 @@ def _save_table(N_train, res, emp_base, pop_base, trace_p0_emp):
                 sd[f'{bk}_s{sg}'] = bv
         for bk, bv in pop_base[sg].items():
             sd[f'{bk}_s{sg}'] = bv
-    np.savez(f'tables/rf_gmm_finite_sample_N{N_train}.npz', **sd)
-    print(f"  Saved tables/rf_gmm_finite_sample_N{N_train}.npz")
+    path = os.path.join(_outdir('tables'), f'N{N_train}.npz')
+    np.savez(path, **sd)
+    print(f"  Saved {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -388,8 +396,7 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
                 ax.legend(fontsize=6.5, loc='upper right')
 
     plt.tight_layout()
-    os.makedirs('figures', exist_ok=True)
-    path = f'figures/rf_gmm_finite_sample_N{N_train}.png'
+    path = os.path.join(_outdir('figures'), f'N{N_train}.png')
     plt.savefig(path, dpi=150, bbox_inches='tight'); plt.close(fig)
     print(f"  Saved {path}")
 
