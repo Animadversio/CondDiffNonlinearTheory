@@ -51,8 +51,12 @@ DATASETS = [
 
 
 def integrate_immse(sigma, gap):
-    """I = (1/2) INT gap(t) dt/t^2, t=sigma^2  ==  INT gap(sigma) sigma^-3 d(sigma).
-    Trapezoid on the log-sigma grid (dsigma = sigma dln sigma => integrand gap*sigma^-2),
+    """I = (1/2) INT gap(t) dt/t^2, t=sigma^2  ==  INT_0^inf gap(sigma) sigma^-3 d(sigma).
+
+    The x-axis is log sigma, so substitute sigma = e^u (u = log sigma, dsigma = e^u du):
+        INT_0^inf gap(sigma) sigma^-3 dsigma = INT_{-inf}^{+inf} gap(e^u) e^{-2u} du,
+    i.e. the density plotted against log sigma is gap(sigma)/sigma^2, NOT /sigma^3.
+    Trapezoid on the log-sigma grid with that integrand,
     plus the analytic tail beyond sigma_max assuming gap saturates (it does):
         INT_smax^inf g ds/s^3 = g / (2 smax^2).
     Returns (total, grid_part, tail, integrand)."""
@@ -163,7 +167,7 @@ def main():
         ax2.fill_between(s_, 0, r['intb'], color='crimson', alpha=.18)
         ax2.axhline(0, color='k', lw=.6)
         ax2.set_xlabel('noise level $\\sigma$')
-        ax2.set_ylabel(r'$\Delta(\sigma)\,\sigma^{-3}$   (nats per $d\ln\sigma$)')
+        ax2.set_ylabel(r'$\Delta(\sigma)\,/\,\sigma^{2}$   (nats per unit $d\log\sigma$)')
         ax2.set_title(f"{r['name']}: I-MMSE integrand — oracle Bayes")
         ax2.grid(True, alpha=.3)
         txt = (f"I(X;U) = {r['Ib']:.3f} nats = {r['Ib']/LOG2:.3f} bits\n"
