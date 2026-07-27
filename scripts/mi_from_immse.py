@@ -120,38 +120,57 @@ def main():
     if not rows:
         return
     n = len(rows)
-    fig, axes = plt.subplots(2, n, figsize=(7.0 * n, 9.0))
-    axes = np.asarray(axes).reshape(2, n)
+    fig, axes = plt.subplots(3, n, figsize=(7.2 * n, 12.6))
+    axes = np.asarray(axes).reshape(3, n)
     fig.suptitle('Mutual information from denoising alone — I-MMSE identity\n'
                  r'$I(X;U)=\frac{1}{2}\int_0^\infty[\mathrm{mmse}(X|Y_t)-\mathrm{mmse}(X|Y_t,U)]\,dt/t^2$,'
-                 '   $t=\\sigma^2$   (area under the red curve = MI)', fontsize=12)
+                 '   $t=\\sigma^2$   (area under the bottom red curve $=$ MI)', fontsize=13)
     for j, r in enumerate(rows):
-        s, d = r['sigma'], r['d']
-        ax = axes[0, j]
-        ax.loglog(s, d['bayes_uncond'], color='crimson', lw=2, label='oracle Bayes, uncond.')
-        ax.loglog(s, d['bayes_cond'], color='crimson', lw=2, ls='--', label='oracle Bayes, cond. on U')
-        ax.loglog(s, d['linear_uncond'], color='darkorange', lw=1.6, label='linear, uncond.')
-        ax.loglog(s, d['wiener_class_cond'], color='darkorange', lw=1.6, ls='--', label='linear, cond. on U')
-        ax.fill_between(s, d['bayes_cond'], d['bayes_uncond'], color='crimson', alpha=.15)
-        ax.set_xlabel('$\\sigma$'); ax.set_ylabel('MSE'); ax.grid(True, alpha=.3)
-        ax.set_title(f"{r['name']}: denoising losses"); ax.legend(fontsize=8)
+        s_, d = r['sigma'], r['d']
 
-        ax2 = axes[1, j]
-        ax2.semilogx(s, r['intb'], color='crimson', lw=2.2, marker='o', ms=3,
-                     label='oracle Bayes  → $I(X;U)$')
-        ax2.semilogx(s, r['intl'], color='darkorange', lw=1.8, ls='--', marker='s', ms=3,
+        # ---- row 0: the denoising losses themselves (MSE). LINEAR y-axis: a log axis
+        # spans 1e-36..1e2 here (Bayes -> 0 as sigma -> 0) and visually collapses the
+        # cond/uncond gap to a single line, which is exactly the wrong impression.
+        ax = axes[0, j]
+        ax.semilogx(s_, d['bayes_uncond'], color='crimson', lw=2.2, label='oracle Bayes, uncond.')
+        ax.semilogx(s_, d['bayes_cond'], color='crimson', lw=2.2, ls='--', label='oracle Bayes, cond. on $U$')
+        ax.fill_between(s_, d['bayes_cond'], d['bayes_uncond'], color='crimson', alpha=.18,
+                        label=r'gap $\Delta(\sigma)$ — integrand of the MI')
+        ax.semilogx(s_, d['linear_uncond'], color='darkorange', lw=1.5, label='linear, uncond.')
+        ax.semilogx(s_, d['wiener_class_cond'], color='darkorange', lw=1.5, ls='--', label='linear, cond. on $U$')
+        ax.set_xlabel('noise level $\\sigma$'); ax.set_ylabel('MSE  (squared pixel units)')
+        ax.grid(True, alpha=.3); ax.set_title(f"{r['name']}: denoising losses")
+        ax.legend(fontsize=8.5, loc='upper left')
+
+        # ---- row 1: the gap alone
+        ax1 = axes[1, j]
+        ax1.semilogx(s_, r['gb'], color='crimson', lw=2.2, marker='o', ms=3.5, label='oracle Bayes')
+        ax1.semilogx(s_, r['gl'], color='darkorange', lw=1.8, ls='--', marker='s', ms=3, label='linear')
+        ax1.axhline(0, color='k', lw=.6)
+        ax1.set_xlabel('noise level $\\sigma$')
+        ax1.set_ylabel(r'$\Delta(\sigma)$ = uncond $-$ cond   (MSE)')
+        ax1.set_title(f"{r['name']}: conditioning gain"); ax1.grid(True, alpha=.3)
+        ax1.legend(fontsize=8.5)
+
+        # ---- row 2: the I-MMSE integrand, in NATS per d ln sigma (area = MI in nats)
+        ax2 = axes[2, j]
+        ax2.semilogx(s_, r['intb'], color='crimson', lw=2.4, marker='o', ms=3.5,
+                     label=r'oracle Bayes $\rightarrow$ area $= I(X;U)$')
+        ax2.semilogx(s_, r['intl'], color='darkorange', lw=1.8, ls='--', marker='s', ms=3,
                      label='linear (NOT an MI)')
-        ax2.set_yscale('symlog', linthresh=1e-2)
+        ax2.fill_between(s_, 0, r['intb'], color='crimson', alpha=.18)
         ax2.axhline(0, color='k', lw=.6)
-        ax2.set_xlabel('$\\sigma$')
-        ax2.set_ylabel(r'integrand  $\Delta(\sigma)\,\sigma^{-3}$  (per $d\ln\sigma$)')
-        ax2.set_title(f"{r['name']}: I-MMSE integrand"); ax2.grid(True, alpha=.3)
+        ax2.set_ylim(-0.5, max(3.0, 1.15 * float(np.max(r['intb']))))
+        ax2.set_xlabel('noise level $\\sigma$')
+        ax2.set_ylabel(r'$\Delta(\sigma)\,\sigma^{-3}$   (nats per $d\ln\sigma$)')
+        ax2.set_title(f"{r['name']}: I-MMSE integrand  (y-axis clipped; linear curve runs off)")
+        ax2.grid(True, alpha=.3)
         txt = (f"I  Bayes  = {r['Ib']:.3f} nats = {r['Ib']/LOG2:.3f} bits\n"
-               f"I  linear = {r['Il']:.1f} nats  ({r['Il']/r['H_U']:.0f}x H(U)!)\n"
+               f"I  linear = {r['Il']:.1f} nats  ({r['Il']/r['H_U']:.0f}x H(U) - invalid)\n"
                f"H(U)      = {r['H_U']:.3f} nats = {r['H_U']/LOG2:.3f} bits")
-        ax2.text(.03, .97, txt, transform=ax2.transAxes, va='top', fontsize=8.5,
-                 family='monospace', bbox=dict(fc='white', alpha=.85, ec='gray'))
-        ax2.legend(fontsize=8, loc='lower right')
+        ax2.text(.02, .97, txt, transform=ax2.transAxes, va='top', fontsize=9,
+                 family='monospace', bbox=dict(fc='white', alpha=.9, ec='gray'))
+        ax2.legend(fontsize=8.5, loc='upper right')
     fig.tight_layout()
     os.makedirs('figures', exist_ok=True)
     out = 'figures/mi_from_immse.png'
