@@ -335,13 +335,18 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
         f'curves = RF vs width k;  lines = baselines.  '
         f'RF in the green band beats the best linear denoiser.', fontsize=10)
 
-    # per row: (title, u/c, NW-Bayes key, pop-Wiener key, EMPIRICAL-linear-Wiener key)
-    # The linear baseline is row-matched: uncond -> unconditional Wiener;
-    # cond -> conditional (per-branch) Wiener, so the nonlinear-gain zone in the
-    # cond row isolates the NONLINEAR conditioning gain (conditioning already in it).
-    rows = [('Unconditional', 'u', 'nw_bayes',      'wiener_pop',      'wiener_emp'),
-            ('Conditional (U=class)', 'c', 'nw_bayes_cond', 'cond_wiener_pop', 'wiener_cond_emp')]
-    for r, (title, uc, nw_key, popw_key, linemp_key) in enumerate(rows):
+    # per row: (title, u/c, NW-Bayes key, pop-Wiener key, EMPIRICAL-linear-Wiener key,
+    #           pop-BAYES key)
+    # Every baseline is row-matched, INCLUDING the population Bayes floor. For a GMM the
+    # law given U=c is Gaussian N(mu_c, Sigma_c), so the CONDITIONAL Bayes denoiser is
+    # exactly the per-class Wiener filter: conditional Bayes MMSE == cond_wiener_pop.
+    # (Using the unconditional 'bayes_pop' in the cond row would draw a floor that is
+    # strictly too high — e.g. d=32, sigma=5: 32.85 vs the true conditional 28.05.)
+    rows = [('Unconditional', 'u', 'nw_bayes',      'wiener_pop',      'wiener_emp',
+             'bayes_pop'),
+            ('Conditional (U=class)', 'c', 'nw_bayes_cond', 'cond_wiener_pop',
+             'wiener_cond_emp', 'cond_wiener_pop')]
+    for r, (title, uc, nw_key, popw_key, linemp_key, popb_key) in enumerate(rows):
         for col, sigma in enumerate(SIGMA_VALUES):
             ax = axes[r, col]; R = res[sigma]; eb = emp_base[sigma]; pb = pop_base[sigma]
             lin_emp = eb[linemp_key]   # row-matched linear baseline
@@ -353,11 +358,16 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
                 ax.axhspan(eb[nw_key], lin_emp, color='green', alpha=0.06, zorder=0,
                            label=('nonlinear-gain zone' if (r == 0 and col == nS - 1) else None))
 
-            # population references (gray)
-            ax.axhline(pb['bayes_pop'], color='gray', ls='--', lw=1.1, alpha=.7,
-                       label='Bayes MMSE (pop)')
-            ax.axhline(pb[popw_key],    color='gray', ls=':',  lw=1.1, alpha=.7,
-                       label=('Wiener (pop)' if r == 0 else 'cond Wiener (pop)'))
+            # population references (gray), row-matched
+            if popb_key == popw_key:
+                # conditional row: Bayes and Wiener coincide (Gaussian given the class)
+                ax.axhline(pb[popb_key], color='gray', ls='--', lw=1.2, alpha=.75,
+                           label='cond Bayes = cond Wiener (pop)')
+            else:
+                ax.axhline(pb[popb_key], color='gray', ls='--', lw=1.1, alpha=.7,
+                           label='Bayes MMSE (pop)')
+                ax.axhline(pb[popw_key], color='gray', ls=':', lw=1.1, alpha=.7,
+                           label='Wiener (pop)')
             # empirical linear baseline (row-matched)
             ax.axhline(lin_emp, color='darkorange', ls='-', lw=1.5,
                        label=('linear Wiener (emp)' if r == 0 else 'cond linear Wiener (emp)'))
@@ -394,7 +404,10 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
             ax.set_xscale('log'); ax.set_xlabel('k / d'); ax.set_ylabel('MSE')
             ax.set_title(f'{title}  σ={sigma}'); ax.grid(True, alpha=.3)
             ax.set_ylim(bottom=-0.01)
-            if r == 0 and col == nS - 1:
+            # legend on BOTH rows: the baselines are row-matched, so the conditional
+            # row's labels (cond Bayes = cond Wiener, cond linear Wiener, ...) differ
+            # from the unconditional row's and need their own key.
+            if col == nS - 1:
                 ax.legend(fontsize=7, loc='upper right', framealpha=.92)
 
     plt.tight_layout()
