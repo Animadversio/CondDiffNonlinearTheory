@@ -145,32 +145,33 @@ def main():
         # ---- row 1: the gap alone
         ax1 = axes[1, j]
         ax1.semilogx(s_, r['gb'], color='crimson', lw=2.2, marker='o', ms=3.5, label='oracle Bayes')
-        ax1.semilogx(s_, r['gl'], color='darkorange', lw=1.8, ls='--', marker='s', ms=3, label='linear')
+        ax1.semilogx(s_, r['gl'], color='darkorange', lw=1.8, ls='--', marker='s', ms=3,
+                     label='linear denoiser')
         ax1.axhline(0, color='k', lw=.6)
         ax1.set_xlabel('noise level $\\sigma$')
         ax1.set_ylabel(r'$\Delta(\sigma)$ = uncond $-$ cond   (MSE)')
         ax1.set_title(f"{r['name']}: conditioning gain"); ax1.grid(True, alpha=.3)
         ax1.legend(fontsize=8.5)
 
-        # ---- row 2: the I-MMSE integrand, in NATS per d ln sigma (area = MI in nats)
+        # ---- row 2: the I-MMSE integrand, in NATS per d ln sigma (area = MI in nats).
+        # Bayes only: this panel IS the mutual information, and the linear curve is not a
+        # mutual information, so plotting it here would invite reading an area off it.
+        # The linear comparison lives in rows 0-1 and in the printout.
         ax2 = axes[2, j]
         ax2.semilogx(s_, r['intb'], color='crimson', lw=2.4, marker='o', ms=3.5,
-                     label=r'oracle Bayes $\rightarrow$ area $= I(X;U)$')
-        ax2.semilogx(s_, r['intl'], color='darkorange', lw=1.8, ls='--', marker='s', ms=3,
-                     label='linear (NOT an MI)')
+                     label=f"area $= I(X;U) = {r['Ib']:.3f}$ nats $= {r['Ib']/LOG2:.3f}$ bits")
         ax2.fill_between(s_, 0, r['intb'], color='crimson', alpha=.18)
         ax2.axhline(0, color='k', lw=.6)
-        ax2.set_ylim(-0.5, max(3.0, 1.15 * float(np.max(r['intb']))))
         ax2.set_xlabel('noise level $\\sigma$')
         ax2.set_ylabel(r'$\Delta(\sigma)\,\sigma^{-3}$   (nats per $d\ln\sigma$)')
-        ax2.set_title(f"{r['name']}: I-MMSE integrand  (y-axis clipped; linear curve runs off)")
+        ax2.set_title(f"{r['name']}: I-MMSE integrand — oracle Bayes")
         ax2.grid(True, alpha=.3)
-        txt = (f"I  Bayes  = {r['Ib']:.3f} nats = {r['Ib']/LOG2:.3f} bits\n"
-               f"I  linear = {r['Il']:.1f} nats  ({r['Il']/r['H_U']:.0f}x H(U) - invalid)\n"
-               f"H(U)      = {r['H_U']:.3f} nats = {r['H_U']/LOG2:.3f} bits")
-        ax2.text(.02, .97, txt, transform=ax2.transAxes, va='top', fontsize=9,
+        txt = (f"I(X;U) = {r['Ib']:.3f} nats = {r['Ib']/LOG2:.3f} bits\n"
+               f"H(U)   = {r['H_U']:.3f} nats = {r['H_U']/LOG2:.3f} bits\n"
+               f"       = {100*r['Ib']/r['H_U']:.1f}% of H(U)")
+        ax2.text(.02, .97, txt, transform=ax2.transAxes, va='top', fontsize=9.5,
                  family='monospace', bbox=dict(fc='white', alpha=.9, ec='gray'))
-        ax2.legend(fontsize=8.5, loc='upper right')
+        ax2.legend(fontsize=9, loc='upper right')
     fig.tight_layout()
     os.makedirs('figures', exist_ok=True)
     out = 'figures/mi_from_immse.png'
