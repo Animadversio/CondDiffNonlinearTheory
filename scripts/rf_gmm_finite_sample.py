@@ -332,7 +332,8 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
     fig.suptitle(
         f'RF Denoiser — finite dataset N_train={N_train}{tag}\n'
         f'd={D}, C={N_CLASSES}, Tr(Σ_emp)={trace_p0_emp:.3f}   '
-        f'[GMM pop = per-component Stein/Hermite, N→∞; Stein = non-Gaussian emp moments]', fontsize=10)
+        f'Curves = RF denoiser vs width k; lines = k-independent baselines.  '
+        f'RF entering the green band beats the best LINEAR denoiser.', fontsize=10)
 
     # per row: (title, u/c, NW-Bayes key, pop-Wiener key, EMPIRICAL-linear-Wiener key)
     # The linear baseline is row-matched: uncond -> unconditional Wiener;
@@ -350,25 +351,29 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
             # best LINEAR denoiser of the same conditioning, heading toward Bayes.
             if eb[nw_key] is not None and lin_emp > eb[nw_key]:
                 ax.axhspan(eb[nw_key], lin_emp, color='green', alpha=0.06, zorder=0,
-                           label=('nonlinear-gain zone' if (r == 0 and col == nS - 1) else None))
+                           label=('nonlinear-gain zone: what only a NONLINEAR denoiser can win' if (r == 0 and col == nS - 1) else None))
 
             # population references (gray)
-            ax.axhline(pb['bayes_pop'], color='gray', ls='--', lw=1.1, alpha=.7, label='Bayes MMSE (pop)')
+            ax.axhline(pb['bayes_pop'], color='gray', ls='--', lw=1.1, alpha=.7,
+                       label='Bayes MMSE — true GMM, N→∞ (abs. floor)')
             ax.axhline(pb[popw_key],    color='gray', ls=':',  lw=1.1, alpha=.7,
-                       label=('Wiener (pop)' if r == 0 else 'cond Wiener (pop)'))
+                       label=('linear Wiener — true GMM, N→∞' if r == 0
+                              else 'cond. linear Wiener — true GMM, N→∞'))
             # empirical linear baseline (row-matched)
             ax.axhline(lin_emp, color='darkorange', ls='-', lw=1.5,
-                       label=('linear Wiener (emp)' if r == 0 else 'cond linear Wiener (emp)'))
+                       label=('best LINEAR denoiser Wy+b on these N pts' if r == 0
+                              else 'best linear denoiser, per class'))
             if r == 1:   # faint uncond linear Wiener for reference in the cond row
                 ax.axhline(eb['wiener_emp'], color='darkorange', ls=':', lw=1.0, alpha=.5,
-                           label='uncond linear Wiener (ref)')
+                           label='uncond. linear Wiener (ref, from row 1)')
             if eb[nw_key] is not None:
                 ax.axhline(eb[nw_key], color='forestgreen', ls='-', lw=1.8,
-                           label=('NW Bayes (emp)' if r == 0 else 'NW Bayes cond (emp)'))
+                           label=('BEST POSSIBLE denoiser on these N pts (Bayes)' if r == 0
+                              else 'best possible denoiser knowing the class'))
 
             # theory curves (k-dependent)
-            ax.plot(kd, R[f'gmm_pop_{uc}'],    color='crimson',  lw=2,   ls='--', label='GMM theory (per-comp, N→∞)')
-            ax.plot(kd, R[f'stein_{uc}'],      color='teal',     lw=1.8, ls='-.', label='RF dense (Stein, non-Gaussian)')
+            ax.plot(kd, R[f'gmm_pop_{uc}'],    color='crimson',  lw=2,   ls='--', label='RF theory, true GMM N→∞ (per-comp Stein/Hermite)')
+            ax.plot(kd, R[f'stein_{uc}'],      color='teal',     lw=1.8, ls='-.', label='RF theory, these N pts (Stein, non-Gaussian)')
             # Circulant-constrained RF (block-circulant Θ & W; only k divisible by d).
             # Curve moved to the dedicated experiment scripts/rf_circulant_win.py (where the
             # p̄0/Δ_stat context lives). Values are still computed and stored in the npz
@@ -378,10 +383,10 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
 
             # RF empirical (PREFERRED, headline): stable analytic-eval estimate
             ax.plot(kd, R[f'rf_analytic_{uc}'], color='steelblue', lw=2.4, marker='o', ms=4,
-                    label='RF empirical (analytic-eval, preferred)')
+                    label='RF MEASURED: emp. fit + analytic risk  [preferred]')
             # RF empirical: pure-MC opt-λ, kept for comparison (wobbly, can dip < Stein)
             ax.plot(kd, R[f'rf_optridge_{uc}'], color='slategray', lw=1.1, ls=':', marker='.', ms=3,
-                    alpha=0.8, label='RF empirical (pure-MC opt-λ)')
+                    alpha=0.8, label='RF measured: pure MC, opt. ridge (noisy)')
             # RF empirical: fixed-ridge study (opt-in)
             if STUDY_FIXED_RIDGE:
                 ax.plot(kd, R[f'rf_fixed_test_{uc}'],  color='slategray', lw=1.2, ls='-',
@@ -393,7 +398,7 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
             ax.set_title(f'{title}  σ={sigma}'); ax.grid(True, alpha=.3)
             ax.set_ylim(bottom=-0.01)
             if r == 0 and col == nS - 1:
-                ax.legend(fontsize=6.5, loc='upper right')
+                ax.legend(fontsize=6.2, loc='upper right', framealpha=.92)
 
     plt.tight_layout()
     path = os.path.join(_outdir('figures'), f'N{N_train}.png')
