@@ -204,6 +204,86 @@ to $\text{Var}(\boldsymbol{x_{0}}\mid\boldsymbol{U})=\boldsymbol{\Sigma}_{\text{
 w.r.t. getting the values of $\boldsymbol{P}_{kk}=f^{H}_{k}\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}f_{k}$
 v.s. $\boldsymbol{P}^{\text{cond}}_{kk}=f^{H}_{k}\boldsymbol{\Sigma}_{\text{cond}}f_{k}$.
 
+\section{Mutual Information of the Learned Distribution}
+
+Recall that with parametrization $\gamma=1/t$, and $\gamma=1/\sigma^{2}$
+then mutual information is:
+\[
+I(\boldsymbol{x_{0}};Y_{\gamma})=\frac{1}{2}\int^{\gamma}_{0}\text{MMSE}[\boldsymbol{x_{0}}\mid Y_{s}]\,ds
+\]
+Consider the affine circulant function class:
+\[
+\mathcal{F}_{\text{circ}}=\{y\mapsto\boldsymbol{W}_{\sigma}y+b:\boldsymbol{W}_{\sigma}\text{ is circulant}\}
+\]
+So the constrained MMSE by Tweedie's formula is:
+\[
+\text{MMSE}_{\mathcal{F}_{\text{circ}}}[\boldsymbol{x_{0}}\mid Y_{\gamma}]=\min_{\boldsymbol{W}\text{circulant},b}\mathbb{E}\|\boldsymbol{x_{0}}-(\boldsymbol{W}_{\sigma}Y_{\gamma}+b)\|^{2}_{2}
+\]
+From last section, with $\gamma=1/\sigma^{2}$, then:
+\[
+\text{MMSE}_{\mathcal{F}_{\text{circ}}}[\boldsymbol{x_{0}}\mid Y_{\gamma}]=\sum^{d}_{k=1}\frac{\boldsymbol{P}_{kk}}{1+\gamma\boldsymbol{P}_{kk}}
+\]
+Then the constrained mutual information is:
+\begin{align*}
+I_{\mathcal{F}_{\text{circ}}}(\boldsymbol{x_{0}};Y_{\gamma}) & =\frac{1}{2}\int^{\gamma}_{0}\sum^{d}_{k=1}\frac{\boldsymbol{P}_{kk}}{1+s\boldsymbol{P}_{kk}}\,ds\\
+ & =\frac{1}{2}\sum^{d}_{k=1}\log(1+\gamma\boldsymbol{P}_{kk})
+\end{align*}
+Recall that in $\mathcal{F}_{L}$ the linear/affine space (unconstrained)
+$\mathcal{F}_{L}=\{y\mapsto\boldsymbol{W}_{\sigma}y+b\}$, we have:
+\[
+I_{\mathcal{F}_{L}}(\boldsymbol{x_{0}};Y_{\gamma})=\frac{1}{2}\sum^{d}_{k=1}\log(1+\gamma\lambda_{k})
+\]
+where $\lambda_{k}$ is the eigenvalues of $\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}}$.
+Again we know that $\boldsymbol{\lambda}\succ\text{diag}(\boldsymbol{P})$
+, and since $f(x)=\log(1+\gamma x)$ is concave, by the Karamata's
+Inequality/Majorization Theorem, $\sum^{d}_{k=1}f(\lambda_{k})\leq\sum^{d}_{k=1}f(\boldsymbol{P}_{kk})$.
+Therefore:
+\[
+I_{\boldsymbol{p_{0}}}(\boldsymbol{x_{0}};Y_{\gamma})\leq I_{\mathcal{F}_{L}}(\boldsymbol{x_{0}};Y_{\gamma})\leq I_{\mathcal{F}_{\text{circ}}}(\boldsymbol{x_{0}};Y_{\gamma})
+\]
+The second inequality also makes sense because 
+
+On the other hand, entropy is:
+\[
+h(Y_{\gamma}\mid\boldsymbol{x_{0}})=\frac{d}{2}\log\Big(\frac{2\pi e}{\gamma}\Big)
+\]
+and
+\[
+h(Y_{\gamma})=\frac{d}{2}\log\Big(\frac{2\pi e}{\gamma}\Big)+I(\boldsymbol{x_{0}};Y_{\gamma})
+\]
+Therefore:
+\begin{align*}
+h(Y_{\gamma}) & \leq\frac{d}{2}\log\Big(\frac{2\pi e}{\gamma}\Big)+I_{\mathcal{F}_{\text{circ}}}(\boldsymbol{x_{0}};Y_{\gamma})\\
+ & =\frac{1}{2}\sum^{d}_{k=1}\log\Big(2\pi e\big(\boldsymbol{P}_{kk}+\frac{1}{\gamma}\big)\Big)
+\end{align*}
+Again since $\gamma=1/\sigma^{2}$:
+\[
+h(\boldsymbol{x_{0}}+\sigma\boldsymbol{Z})\leq\frac{1}{2}\log\big(2\pi e(\boldsymbol{P}_{kk}+\sigma^{2})\big)
+\]
+For the conditional case:
+\[
+\text{MMSE}_{\mathcal{F}_{\text{circ}},U}[\boldsymbol{x_{0}}\mid Y_{\gamma},U]=\sum^{d}_{k=1}\frac{\boldsymbol{P}^{\text{cond}}_{kk}}{1+\gamma\boldsymbol{P}^{\text{cond}}_{kk}}
+\]
+So:
+\begin{align*}
+I_{\mathcal{F}_{\text{circ}}}(Y_{\gamma};U) & =\frac{1}{2}\int^{\gamma}_{0}\sum^{d}_{k=1}\text{MMSE}_{\mathcal{F}_{\text{circ}}}[\boldsymbol{x_{0}}\mid Y_{\gamma}]-\text{MMSE}_{\mathcal{F}_{\text{circ}},U}[\boldsymbol{x_{0}}\mid Y_{\gamma},U]\,ds\\
+ & =\frac{1}{2}\sum^{d}_{k=1}\log\Big(\frac{1+\gamma\boldsymbol{P}_{kk}}{1+\gamma\boldsymbol{P}^{\text{cond}}_{kk}}\Big)
+\end{align*}
+Taking $\gamma\to\infty$:
+\[
+I_{\mathcal{F}_{\text{circ}}}(\boldsymbol{x_{0}};U)=\frac{1}{2}\sum^{d}_{k=1}\log\Big(\frac{\boldsymbol{P}_{kk}}{\boldsymbol{P}^{\text{cond}}_{kk}}\Big)
+\]
+Recall that in $\mathcal{F}_{L}$ the unconstrained linear/affine
+space:
+\[
+I_{\mathcal{F}_{L}}(\boldsymbol{x_{0}};U)=\frac{1}{2}\sum^{d}_{k=1}\log\Big(\frac{\lambda_{k}}{\lambda^{\text{cond}}_{k}}\Big)
+\]
+Unlike the unconditional case we can't really compare $I_{\mathcal{F}_{\text{circ}}}(\boldsymbol{x_{0}};U)$
+and $I_{\mathcal{F}_{L}}(\boldsymbol{x_{0}};U)$.
+
+We can see that the circulant constraint increases its function class
+MMSE and so increases the corresponding entropy upperbound.
+
 \section{Unconditional Nonlinear Denoiser with Circulant Matrix}
 
 Recall that the nonlinear map is: 
@@ -413,7 +493,8 @@ However $\Theta$ in our circulant setting and $\Theta$ in the regular
 unconstrained nonlinear denoiser is not the same; thus leaving space
 for $\mathcal{L}^{\text{circ}}_{\sigma}$ to beat $\mathcal{L}_{\sigma}$
 
-\section{When does $\mathcal{L}^{\text{circ}}_{\sigma}$ beat $\mathcal{L}_{\sigma}$?}
+\section{When does $\mathcal{L}^{\text{circ}}_{\sigma}$ beat $\mathcal{L}_{\sigma}$
+in nonlinear denoiser?}
 
 Through our experiments the RF denoiser needs a lot of features, i.e.
 $k/d\to\infty$. We know that circulant structure gives its best loss
