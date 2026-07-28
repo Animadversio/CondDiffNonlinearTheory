@@ -332,7 +332,6 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
     fig.suptitle(
         f'RF Denoiser — finite dataset N_train={N_train}{tag}\n'
         f'd={D}, C={N_CLASSES}, Tr(Σ_emp)={trace_p0_emp:.3f}   '
-        f'curves = RF vs width k;  lines = baselines.  '
         f'RF in the green band beats the best linear denoiser.', fontsize=10)
 
     # per row: (title, u/c, NW-Bayes key, pop-Wiener key, EMPIRICAL-linear-Wiener key,
