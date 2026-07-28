@@ -371,9 +371,6 @@ def _plot(N_train, res, emp_base, pop_base, trace_p0_emp):
             # empirical linear baseline (row-matched)
             ax.axhline(lin_emp, color='darkorange', ls='-', lw=1.5,
                        label=('linear Wiener (emp)' if r == 0 else 'cond linear Wiener (emp)'))
-            if r == 1:   # faint uncond linear Wiener for reference in the cond row
-                ax.axhline(eb['wiener_emp'], color='darkorange', ls=':', lw=1.0, alpha=.5,
-                           label='uncond linear Wiener (ref)')
             if eb[nw_key] is not None:
                 ax.axhline(eb[nw_key], color='forestgreen', ls='-', lw=1.8,
                            label=('Bayes MMSE (emp)' if r == 0 else 'cond Bayes MMSE (emp)'))
