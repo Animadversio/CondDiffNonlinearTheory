@@ -52,7 +52,7 @@ def main():
     aspect ratio while still showing every panel exactly once."""
     cols = [(N, uc) for N in N_TRAIN for uc in ('u', 'c')]
     nC, nR = len(cols), len(SIGMA_VALUES)
-    fig, axes = plt.subplots(nR, nC, figsize=(2.55 * nC, 3.05 * nR),
+    fig, axes = plt.subplots(nR, nC, figsize=(3.15 * nC, 3.05 * nR),
                              squeeze=False, sharex=True)
     fig.suptitle(f'RF denoiser on a finite dataset — GMM d={D}, C={N_CLASSES}   '
                  'RF in the green band beats the best linear denoiser   '
@@ -100,14 +100,14 @@ def main():
             handles.setdefault('RF measured (pure-MC opt-λ)', h)
 
             ax.set_xscale('log'); ax.set_ylim(bottom=-0.01)
-            ax.grid(True, alpha=.3); ax.tick_params(labelsize=8.5)
+            ax.grid(True, alpha=.3); ax.tick_params(labelsize=9.5)
             if r == 0:
                 ax.set_title(f"N={N}\n{'Uncond.' if uc == 'u' else 'Cond. (U)'}",
                              fontsize=12.5, fontweight='bold', pad=5)
             if r == nR - 1:
-                ax.set_xlabel('k / d', fontsize=11)
+                ax.set_xlabel('k / d', fontsize=15)
             if c == 0:
-                ax.set_ylabel('MSE', fontsize=10.5)
+                ax.set_ylabel('MSE', fontsize=12)
                 ax.text(-0.38, 0.5, f'σ = {sg}', transform=ax.transAxes, rotation=90,
                         va='center', ha='center', fontsize=14, fontweight='bold')
 
