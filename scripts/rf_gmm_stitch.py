@@ -111,9 +111,10 @@ def main():
                 ax.text(-0.38, 0.5, f'σ = {sg}', transform=ax.transAxes, rotation=90,
                         va='center', ha='center', fontsize=14, fontweight='bold')
 
-    fig.legend(handles.values(), handles.keys(), loc='lower center', ncol=8,
-               fontsize=11.5, frameon=True, bbox_to_anchor=(0.5, -0.012))
-    fig.tight_layout(rect=[0.014, 0.045, 1, 0.972])
+    # legend on the RIGHT, as a single vertical column outside the axes
+    fig.legend(handles.values(), handles.keys(), loc='center left', ncol=1,
+               fontsize=12.5, frameon=True, bbox_to_anchor=(0.885, 0.5))
+    fig.tight_layout(rect=[0.014, 0.012, 0.88, 0.972])
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     fig.savefig(OUT, dpi=140, bbox_inches='tight')
     print(f"Saved {OUT}   ({nR} rows x {nC} cols, landscape)")
