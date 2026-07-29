@@ -5,8 +5,9 @@ Naively pasting the four per-N_train PNGs side by side repeats the axis labels, 
 titles and the legend four times, so everything shrinks and nothing is readable. Instead
 this rebuilds a SINGLE figure from the stored tables:
 
-    columns = sigma            (one column per noise level, header on the top row only)
-    rows    = N_train x {uncond, cond}   (row label on the left, e.g. "N=64 / Conditional")
+    rows    = sigma                      (row label on the left)
+    columns = N_train x {uncond, cond}   (bold header on the top row)
+LANDSCAPE aspect, so it drops into slides/papers without rotating.
 
 with one shared legend for the whole figure, x-labels only on the bottom row and y-labels
 only on the left column. Nothing is recomputed — it reads tables/rf_gmm_finite_sample/d{D}/.
@@ -46,76 +47,76 @@ def load(N):
 
 
 def main():
-    nS = len(SIGMA_VALUES)
-    nR = 2 * len(N_TRAIN)
-    fig, axes = plt.subplots(nR, nS, figsize=(4.1 * nS, 2.85 * nR),
+    """Landscape layout: sigma down the rows, (N_train x cond/uncond) across the columns.
+    This is the transpose of the natural per-N figure and gives a wide, slide-friendly
+    aspect ratio while still showing every panel exactly once."""
+    cols = [(N, uc) for N in N_TRAIN for uc in ('u', 'c')]
+    nC, nR = len(cols), len(SIGMA_VALUES)
+    fig, axes = plt.subplots(nR, nC, figsize=(2.55 * nC, 3.05 * nR),
                              squeeze=False, sharex=True)
-    fig.suptitle(f'RF denoiser on a finite dataset — GMM d={D}, C={N_CLASSES}\n'
+    fig.suptitle(f'RF denoiser on a finite dataset — GMM d={D}, C={N_CLASSES}   '
                  'RF in the green band beats the best linear denoiser   '
-                 '(baselines are row-matched: conditional rows use conditional baselines)',
-                 fontsize=15, y=0.997)
+                 '(conditional columns use conditional baselines)',
+                 fontsize=15, y=1.005)
 
+    cache = {N: load(N) for N in N_TRAIN}
+    meta = {'u': ('nw_bayes', 'wiener_pop', 'wiener_emp', 'bayes_pop'),
+            'c': ('nw_bayes_cond', 'cond_wiener_pop', 'wiener_cond_emp', 'cond_wiener_pop')}
     handles = {}
-    for bi, N in enumerate(N_TRAIN):
-        kg, res, emp, pop, tr = load(N)
+    for c, (N, uc) in enumerate(cols):
+        kg, res, emp, pop, tr = cache[N]
         kd = np.array(kg) / D
-        rows = [('Unconditional', 'u', 'nw_bayes', 'wiener_pop', 'wiener_emp', 'bayes_pop'),
-                ('Conditional (U=class)', 'c', 'nw_bayes_cond', 'cond_wiener_pop',
-                 'wiener_cond_emp', 'cond_wiener_pop')]
-        for ri, (rname, uc, nw_k, popw_k, lin_k, popb_k) in enumerate(rows):
-            r = 2 * bi + ri
-            for c, sg in enumerate(SIGMA_VALUES):
-                ax = axes[r][c]
-                R, eb, pb = res[sg], emp[sg], pop[sg]
-                lin = eb[lin_k]
+        nw_k, popw_k, lin_k, popb_k = meta[uc]
+        for r, sg in enumerate(SIGMA_VALUES):
+            ax = axes[r][c]
+            R, eb, pb = res[sg], emp[sg], pop[sg]
+            lin = eb[lin_k]
 
-                if eb[nw_k] is not None and lin > eb[nw_k]:
-                    h = ax.axhspan(eb[nw_k], lin, color='green', alpha=.07, zorder=0)
-                    handles.setdefault('nonlinear-gain zone', h)
-                # baselines are ROW-MATCHED (cond rows use the conditional versions),
-                # so each style gets ONE legend entry rather than a near-duplicate pair.
-                h, = ax.plot(kd, np.full_like(kd, pb[popb_k]), color='gray', ls='--', lw=1.1)
-                handles.setdefault('Bayes MMSE (pop)', h)
-                if popb_k != popw_k:      # uncond row: Wiener(pop) is a separate line
-                    h, = ax.plot(kd, np.full_like(kd, pb[popw_k]), color='gray', ls=':', lw=1.1)
-                    handles.setdefault('linear Wiener (pop)', h)
-                h, = ax.plot(kd, np.full_like(kd, lin), color='darkorange', ls='-', lw=1.5)
-                handles.setdefault('linear Wiener (emp)', h)
-                if eb[nw_k] is not None:
-                    h, = ax.plot(kd, np.full_like(kd, eb[nw_k]), color='forestgreen', lw=1.8)
-                    handles.setdefault('Bayes MMSE (emp)', h)
+            if eb[nw_k] is not None and lin > eb[nw_k]:
+                h = ax.axhspan(eb[nw_k], lin, color='green', alpha=.07, zorder=0)
+                handles.setdefault('nonlinear-gain zone', h)
+            # baselines are column-matched (cond columns use the conditional versions),
+            # so each style gets ONE legend entry rather than a near-duplicate pair.
+            h, = ax.plot(kd, np.full_like(kd, pb[popb_k]), color='gray', ls='--', lw=1.1)
+            handles.setdefault('Bayes MMSE (pop)', h)
+            if popb_k != popw_k:
+                h, = ax.plot(kd, np.full_like(kd, pb[popw_k]), color='gray', ls=':', lw=1.1)
+                handles.setdefault('linear Wiener (pop)', h)
+            h, = ax.plot(kd, np.full_like(kd, lin), color='darkorange', ls='-', lw=1.5)
+            handles.setdefault('linear Wiener (emp)', h)
+            if eb[nw_k] is not None:
+                h, = ax.plot(kd, np.full_like(kd, eb[nw_k]), color='forestgreen', lw=1.8)
+                handles.setdefault('Bayes MMSE (emp)', h)
 
-                h, = ax.plot(kd, R[f'gmm_pop_{uc}'], color='crimson', lw=2, ls='--')
-                handles.setdefault('RF theory (pop, N→∞)', h)
-                h, = ax.plot(kd, R[f'stein_{uc}'], color='teal', lw=1.8, ls='-.')
-                handles.setdefault('RF theory (emp)', h)
-                h, = ax.plot(kd, R[f'rf_analytic_{uc}'], color='steelblue', lw=2.2,
-                             marker='o', ms=3.5)
-                handles.setdefault('RF measured (emp)', h)
-                h, = ax.plot(kd, R[f'rf_optridge_{uc}'], color='slategray', lw=1.0, ls=':',
-                             marker='.', ms=2.5, alpha=.8)
-                handles.setdefault('RF measured (pure-MC opt-λ)', h)
+            h, = ax.plot(kd, R[f'gmm_pop_{uc}'], color='crimson', lw=1.9, ls='--')
+            handles.setdefault('RF theory (pop, N→∞)', h)
+            h, = ax.plot(kd, R[f'stein_{uc}'], color='teal', lw=1.7, ls='-.')
+            handles.setdefault('RF theory (emp)', h)
+            h, = ax.plot(kd, R[f'rf_analytic_{uc}'], color='steelblue', lw=2.1,
+                         marker='o', ms=3.2)
+            handles.setdefault('RF measured (emp)', h)
+            h, = ax.plot(kd, R[f'rf_optridge_{uc}'], color='slategray', lw=1.0, ls=':',
+                         marker='.', ms=2.4, alpha=.8)
+            handles.setdefault('RF measured (pure-MC opt-λ)', h)
 
-                ax.set_xscale('log')
-                ax.set_ylim(bottom=-0.01)
-                ax.grid(True, alpha=.3)
-                ax.tick_params(labelsize=9)
-                if r == 0:
-                    ax.set_title(f'σ = {sg}', fontsize=14, pad=8)
-                if r == nR - 1:
-                    ax.set_xlabel('k / d', fontsize=12)
-                if c == 0:
-                    ax.set_ylabel('MSE', fontsize=11)
-                    ax.text(-0.30, 0.5, f'N={N}\n{"Uncond." if uc == "u" else "Cond. (U)"}',
-                            transform=ax.transAxes, rotation=90, va='center', ha='center',
-                            fontsize=12, fontweight='bold')
+            ax.set_xscale('log'); ax.set_ylim(bottom=-0.01)
+            ax.grid(True, alpha=.3); ax.tick_params(labelsize=8.5)
+            if r == 0:
+                ax.set_title(f"N={N}\n{'Uncond.' if uc == 'u' else 'Cond. (U)'}",
+                             fontsize=12.5, fontweight='bold', pad=8)
+            if r == nR - 1:
+                ax.set_xlabel('k / d', fontsize=11)
+            if c == 0:
+                ax.set_ylabel('MSE', fontsize=10.5)
+                ax.text(-0.38, 0.5, f'σ = {sg}', transform=ax.transAxes, rotation=90,
+                        va='center', ha='center', fontsize=14, fontweight='bold')
 
-    fig.legend(handles.values(), handles.keys(), loc='lower center',
-               ncol=4, fontsize=11.5, frameon=True, bbox_to_anchor=(0.5, -0.004))
-    fig.tight_layout(rect=[0.012, 0.035, 1, 0.975])
+    fig.legend(handles.values(), handles.keys(), loc='lower center', ncol=8,
+               fontsize=11.5, frameon=True, bbox_to_anchor=(0.5, -0.012))
+    fig.tight_layout(rect=[0.014, 0.045, 1, 0.965])
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     fig.savefig(OUT, dpi=140, bbox_inches='tight')
-    print(f"Saved {OUT}   ({nR} rows x {nS} cols, N_train={N_TRAIN})")
+    print(f"Saved {OUT}   ({nR} rows x {nC} cols, landscape)")
 
 
 if __name__ == '__main__':
