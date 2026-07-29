@@ -57,7 +57,7 @@ def main():
     fig.suptitle(f'RF denoiser on a finite dataset — GMM d={D}, C={N_CLASSES}   '
                  'RF in the green band beats the best linear denoiser   '
                  '(conditional columns use conditional baselines)',
-                 fontsize=15, y=1.005)
+                 fontsize=15, y=0.982)
 
     cache = {N: load(N) for N in N_TRAIN}
     meta = {'u': ('nw_bayes', 'wiener_pop', 'wiener_emp', 'bayes_pop'),
@@ -103,7 +103,7 @@ def main():
             ax.grid(True, alpha=.3); ax.tick_params(labelsize=8.5)
             if r == 0:
                 ax.set_title(f"N={N}\n{'Uncond.' if uc == 'u' else 'Cond. (U)'}",
-                             fontsize=12.5, fontweight='bold', pad=8)
+                             fontsize=12.5, fontweight='bold', pad=5)
             if r == nR - 1:
                 ax.set_xlabel('k / d', fontsize=11)
             if c == 0:
@@ -113,7 +113,7 @@ def main():
 
     fig.legend(handles.values(), handles.keys(), loc='lower center', ncol=8,
                fontsize=11.5, frameon=True, bbox_to_anchor=(0.5, -0.012))
-    fig.tight_layout(rect=[0.014, 0.045, 1, 0.965])
+    fig.tight_layout(rect=[0.014, 0.045, 1, 0.972])
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     fig.savefig(OUT, dpi=140, bbox_inches='tight')
     print(f"Saved {OUT}   ({nR} rows x {nC} cols, landscape)")
