@@ -1,0 +1,798 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage[framemethod=TikZ]{mdframed}
+\usepackage{hyperref}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\newtheorem{assumption}{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+
+\surroundwithmdframed[linewidth=0.6pt, innertopmargin=6pt, innerbottommargin=6pt]{theorem}
+\surroundwithmdframed[linewidth=0.4pt, innertopmargin=5pt, innerbottommargin=5pt]{lemma}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Tr}{\operatorname{Tr}}
+\newcommand{\Cov}{\operatorname{Cov}}
+\newcommand{\Var}{\operatorname{Var}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\He}{\operatorname{He}}
+\newcommand{\Sig}{\Sigma_{p_0}}
+\newcommand{\Sy}{\Sigma_y}
+\newcommand{\lmin}{\lambda_{\min}}
+\newcommand{\Fro}[1]{\lVert #1 \rVert_F}
+\newcommand{\op}[1]{\lVert #1 \rVert_{\mathrm{op}}}
+\newcommand{\TT}{\mathsf{T}}
+
+\title{The linear-in-disguise threshold of the random-feature denoiser:\\ full proof of Proposition~1 (final form)}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent\textbf{Scope.} This note proves the one-sided (``cannot outperform'') direction: under a Stein-regularity condition on $p_0$ and below the tensor-conditioning threshold $k \ll d^{n_0}$, the optimal random-feature (RF) denoiser cannot beat the optimal linear denoiser by more than $O(k\varepsilon_d^2)$ in total loss. Combined with the $\psi \to \infty$ limit of the deterministic-equivalent formula in the companion RMT note (effective noise $\eta \to 0$), this yields asymptotic \emph{equality} of normalized losses. The proof is self-contained except for two standard external inputs, flagged where used: Mehler's orthogonality identity, and kernel-matrix concentration for fixed-degree spherical harmonics \cite{MMM21,MZ22}. Everything else --- including the Gaussian-equivalence mechanism --- is proved from scratch; in particular no Gaussianity of $x_0$ is assumed anywhere.
+
+\medskip
+\noindent\textbf{Structure.} The argument separates cleanly into two halves, and the note is organized to keep them apart.
+
+\emph{Part~I} proves a purely algebraic statement. For an \emph{arbitrary fixed} weight matrix and offset vector --- no randomness, no asymptotics, and in particular \emph{no relation between the width $k$ and the dimension $d$} --- the RF denoiser's loss is bounded below by the linear denoiser's, minus an error that is an explicit ratio: each feature's Stein defect divided by that feature's own share of the Mehler noise floor. Everything in Part~I is an identity or a matrix inequality. The only hypotheses are $\Sig \succ 0$, an envelope on the activation, and enough integrability for the covariances to exist. This is Theorem~\ref{thm:master}.
+
+\emph{Part~II} converts that into a statement about widths. Theorem~\ref{thm:master} is unconditional but can be \emph{vacuous}: its denominator involves $\rho_* = \min_n\lmin(R^{\circ n})$, which vanishes identically once $k$ exceeds a symmetric-tensor dimension, and its numerator is a sum over $k$ features that must be controlled in aggregate. Both are properties of the \emph{design}. Part~II therefore draws $(\Theta,\epsilon)$ at random, imposes a feature budget $k \lesssim d^{\,n_0}$ to keep $\rho_*$ bounded below, and imposes regularity on $p_0$ and on the activation to control the defect sum. This is Theorem~\ref{thm:prob}, and the feature budget appears there and nowhere earlier.
+
+\part{The deterministic inequality}
+
+\section{Setting and notation}\label{sec:setting}
+
+Let $x_0 \sim p_0$ on $\R^d$ with $\E x_0 = 0$ (without loss of generality: both denoisers carry a free intercept, which absorbs the mean, and every quantity below is a centered covariance) and covariance $\Sig := \E[x_0 x_0^\top]$. Let $y = x_0 + \sigma Z$, $Z \sim \mathcal N(0, I_d)$ independent of $x_0$, with $\sigma > 0$ fixed, and $\Sy := \Sig + \sigma^2 I$. Features:
+\[
+\phi_j(y) = \omega(\theta_j^\top y + \epsilon_j), \qquad j = 1, \dots, k, \qquad \theta_j \overset{iid}{\sim} \mathcal N(0, I_d/d),
+\]
+and offsets drawn jointly with the weights,
+\[
+\epsilon_j \overset{iid}{\sim} \mathcal N(0, \sigma_\epsilon^2), \qquad \epsilon \perp (\Theta, x_0, Z),
+\]
+for a fixed $\sigma_\epsilon \ge 0$ (the case $\sigma_\epsilon = 0$ is the bias-free model). Both $\Theta$ and $\epsilon$ are \emph{parameters}: they are drawn once, together, and then held fixed while $(x_0, Z)$ vary. Write $\Theta \in \R^{k\times d}$ for the matrix with rows $\theta_j^\top$, $\hat\theta_j = \theta_j/\lVert\theta_j\rVert$, $R_{ij} := \hat\theta_i^\top\hat\theta_j$, $s_j := \sigma\lVert\theta_j\rVert$, and, conditional on $x_0$,
+\[
+u_j := \theta_j^\top x_0 + \epsilon_j, \qquad \xi_j := \hat\theta_j^\top Z \sim \mathcal N(0,1), \qquad \theta_j^\top y + \epsilon_j = u_j + s_j\xi_j .
+\]
+The RF and linear denoising losses are
+\[
+\mathcal L^{\mathrm{RF}}_\sigma := \min_{W \in \R^{d\times k},\, b}\ \E\lVert W\phi(y) + b - x_0\rVert^2,
+\qquad
+\mathcal L^{\mathrm{lin}}_\sigma := \min_{A,\, b}\ \E\lVert Ay + b - x_0\rVert^2 = \Tr\!\big(\Sig - \Sig\Sy^{-1}\Sig\big).
+\]
+Hermite polynomials $\He_n$ are the probabilists' family, $\E_{\xi\sim\mathcal N(0,1)}[\He_n(\xi)\He_m(\xi)] = n!\,\delta_{nm}$, and for $s > 0$ we use the note's convention
+\[
+c_n(M, s) := \tfrac{1}{n!}\,\E_{\xi}\big[\omega(M + s\xi)\He_n(\xi)\big],
+\qquad
+\psi_s(M) := c_0(M,s) = (\omega * \mathcal N(0,s^2))(M).
+\]
+
+\noindent Note that Part~I uses none of the distributional structure just described: the laws of $\Theta$ and $\epsilon$ are recorded here because Part~II will need them, but every statement up to and including Theorem~\ref{thm:master} holds for one arbitrary fixed realization. The only hypothesis Part~I places on the activation is a growth envelope.
+
+\begin{assumption}[Activation envelope]\label{ass:env}
+$\omega$ is measurable and obeys the exponential envelope
+\begin{equation}\label{eq:envelope}
+|\omega(u)| \;\le\; L\,e^{a|u|}, \qquad u \in \R,
+\end{equation}
+for constants $L > 0$, $a \ge 0$. (No smallness is required of $a$: the integrability condition \eqref{eq:expmom} below --- and, in Part~II, sub-Gaussianity of $x_0$ (Assumption~\ref{ass:data}) --- makes $\E e^{c|u|}$ finite for every $c$. Bounded activations satisfy \eqref{eq:envelope} with $a = 0$ exactly; polynomial growth satisfies it for \emph{every} $a > 0$, with $L = L(a)$, but not with $a = 0$.)
+\end{assumption}
+
+\noindent Together with $\Sig \succ 0$ and the integrability condition \eqref{eq:expmom} stated in the theorem below, this is the complete list of hypotheses for Part~I. In particular there is no non-degeneracy requirement on $\omega$, no regularity requirement on $p_0$, and no constraint linking $k$ to $d$; those enter only in Part~II, and the reader who wants to see exactly where can watch for the first appearance of Assumption~\ref{ass:data}.
+
+\section{Exact structure: signal linearity and the Mehler noise}\label{sec:exact}
+
+The whole argument rests on a single structural observation, and it is worth isolating before any estimate is made. Because the target of the denoising problem is $x_0$ \emph{itself} --- not a scalar label, not a nonlinear functional of $x_0$ --- the signal that any linear readout of the features can access is \emph{exactly} linear in $x_0$. Nonlinearity in the features has only two places to go: into the linear coefficient itself, or into a block that is exactly uncorrelated with $x_0$ and therefore useless. Lemma~\ref{lem:decomp} makes this precise, with no distributional assumption whatever.
+
+\begin{lemma}[Bias--noise--signal decomposition]\label{lem:decomp}
+Let $g_j(x_0) := \E[\phi_j \mid x_0] = \psi_{s_j}(u_j)$ and define
+\[
+\beta_j := \Sig^{-1}\Cov(x_0, g_j), \quad B := [\beta_1 \cdots \beta_k] \in \R^{d\times k}, \quad
+h_j := g_j - \E g_j - \beta_j^\top x_0, \quad H := \Cov(h),
+\]
+\[
+N_{ij} := \E_{x_0}\big[\Cov_Z(\phi_i, \phi_j \mid x_0)\big].
+\]
+Then, exactly,
+\[
+\Cov(x_0, \phi) = \Sig B, \qquad \Sigma_\phi = B^\top \Sig B + H + N, \qquad H \succeq 0,\ N \succeq 0 .
+\]
+\end{lemma}
+
+\begin{proof}
+Conditional on $x_0$, $\theta_j^\top y + \epsilon_j = u_j + s_j\xi_j$ with $\xi_j$ standard Gaussian, so $g_j = \E_\xi[\omega(u_j + s_j\xi)] = \psi_{s_j}(u_j)$; the envelope \eqref{eq:envelope} and sub-Gaussianity of $x_0$ give integrability throughout, since $\E e^{c|u_j|} < \infty$ for every $c$. Write $\phi_j = g_j + \eta_j$ with $\E[\eta_j \mid x_0] = 0$. Then $\Cov(x_0, \eta_j) = \E[x_0\,\E[\eta_j\mid x_0]] = 0$, hence $\Cov(x_0,\phi_j) = \Cov(x_0, g_j) = \Sig\beta_j$. Next, $\Cov(g_i, \eta_j) = \E[g_i\,\E[\eta_j \mid x_0]] = 0$, so $\Sigma_\phi = \Cov(g) + \Cov(\eta)$ and $\Cov(\eta)_{ij} = \E[\eta_i\eta_j] = N_{ij}$. Finally $g_j - \E g_j = \beta_j^\top x_0 + h_j$ with $\Cov(x_0, h_j) = \Cov(x_0,g_j) - \Sig\beta_j = 0$ by construction, so the cross terms $\Cov(\beta_i^\top x_0, h_j) = \beta_i^\top\Cov(x_0, h_j)$ vanish and $\Cov(g) = B^\top\Sig B + H$. Positive semidefiniteness of $H$ and $N$ is immediate (they are covariance matrices; $N = \Cov(\eta)$).
+\end{proof}
+
+\begin{remark}
+Lemma~\ref{lem:decomp} is the structural heart of the whole argument and uses \emph{no} distributional assumption: because the denoising target is $x_0$ itself, the signal seen by any linear readout is \emph{exactly} linear in $x_0$; every nonlinearity in the conditional means is either projected into $B$ or quarantined in the signal-orthogonal block $H$. Non-Gaussianity of $p_0$ can act only through the geometry of $B$.
+\end{remark}
+
+\noindent Lemma~\ref{lem:decomp} tells us that the only quantities that matter are $B$ (the signal directions), $H$ (harmless), and $N$ (the noise the features inherit from $Z$). The next two lemmas dissect $N$, which is where all the leverage lies: it is the noise floor against which the features' signal must compete, and the more of it there is, the harder it is for the RF model to beat the linear one. Mehler's identity resolves $N$ into Hermite orders, and --- this is the point --- \emph{every order is separately positive semidefinite}, so we may keep whichever orders are convenient and discard the rest without ever losing an inequality.
+
+\begin{lemma}[Mehler decomposition of the noise]\label{lem:mehler}
+$N = \sum_{n \ge 1} N^{(n)}$ (convergent entrywise), where
+\[
+N^{(n)}_{ij} = n!\ \E_{x_0}\big[\rho_{ij}^{\,n}\, c_n(u_i, s_i)\, c_n(u_j, s_j)\big], \qquad \rho_{ij} := R_{ij} = \hat\theta_i^\top\hat\theta_j,
+\]
+and every $N^{(n)} \succeq 0$.
+\end{lemma}
+
+\begin{proof}
+Conditional on $x_0$, $\omega(u_j + s_j\cdot) \in L^2(\gamma)$ by \eqref{eq:envelope}, so $\phi_j = \sum_{n\ge0} c_n(u_j, s_j)\He_n(\xi_j)$ in $L^2$. The pair $(\xi_i, \xi_j)$ is jointly standard Gaussian with correlation $\rho_{ij}$, and Mehler's identity gives $\E[\He_n(\xi_i)\He_m(\xi_j)] = \delta_{nm}\, n!\, \rho_{ij}^n$ (external input; see e.g.\ the generating-function proof in standard references). Parseval justifies the term-by-term expectation, and subtracting $c_0(u_i,s_i)c_0(u_j,s_j) = g_ig_j$ leaves $\Cov_Z(\phi_i,\phi_j\mid x_0) = \sum_{n\ge1} n!\rho_{ij}^n c_n(u_i,s_i)c_n(u_j,s_j)$, absolutely summable by Cauchy--Schwarz against the conditional second moments; take $\E_{x_0}$.
+
+Positivity: fix $x_0$ and write $c^{(n)} := (c_n(u_j,s_j))_{j\le k}$. Then the conditional $n$-th term is $n!\,R^{\circ n} \circ c^{(n)}(c^{(n)})^\top$. $R$ is a Gram matrix, hence PSD; the Schur product theorem (if $A, B \succeq 0$ then $A\circ B \succeq 0$: $A\circ B$ is a principal submatrix of $A\otimes B$) gives $R^{\circ n} \succeq 0$, and $R^{\circ n}\circ c^{(n)}(c^{(n)})^\top = D_{c^{(n)}} R^{\circ n} D_{c^{(n)}} \succeq 0$ where $D_v := \diag(v)$. Expectation over $x_0$ preserves PSD.
+\end{proof}
+
+\noindent Two of those orders will be used, and they play completely different roles. Order $n = 1$ will turn out to reproduce, exactly, the noise that the matched \emph{linear} model suffers --- this is the Gaussian-equivalence mechanism, and it is the content of Lemma~\ref{lem:schur} below. Orders $n \ge n_0 \ge 2$ will supply a strictly positive ridge. To see the first of these we need the first-order coefficient in closed form, which is what the next lemma provides; the identity $c_1 = s\,\psi_s'$ is elementary but it is the hinge of the whole argument, since it is what ties the features' first-order noise response to the derivative that also governs their signal response.
+
+\begin{lemma}[First-order identities]\label{lem:c1}
+For $s > 0$, $\psi_s \in C^\infty$, $\psi_s^{(r)}(M) = s^{-r}\,\E_\xi[\omega(M+s\xi)\He_r(\xi)] = \tfrac{r!}{s^{r}}\,c_r(M,s)$, and for every $r \ge 0$
+\[
+|\psi_s^{(r)}(M)| \le C_r(L, a, \sigma)\,e^{a|M|} \quad \text{uniformly over } s \in [\tfrac\sigma2, 2\sigma] .
+\]
+Consequently $c_1(u_j, s_j) = s_j\,\alpha_j(x_0)$ with $\alpha_j(x_0) := \psi_{s_j}'(u_j)$, and since $\rho_{ij}s_is_j = \sigma^2\theta_i^\top\theta_j$,
+\[
+N^{(1)} = \sigma^2\,(\Theta\Theta^\top)\circ \E_{x_0}\big[\alpha\alpha^\top\big], \qquad \alpha := (\alpha_1,\dots,\alpha_k)^\top .
+\]
+\end{lemma}
+
+\begin{proof}
+Write $\psi_s(M) = \int \omega(t)\varphi_s(M - t)\,dt$ with $\varphi_s$ the $\mathcal N(0,s^2)$ density. Differentiation under the integral is justified by \eqref{eq:envelope} against the Gaussian decay of the derivatives of $\varphi_s$; using $\varphi_s^{(r)}(u) = (-1)^r s^{-r}\He_r(u/s)\varphi_s(u)$ and the substitution $t = M + s\xi$ yields the stated identity. For the envelope, $|\psi_s^{(r)}(M)| \le s^{-r}L\,\E_\xi\big[e^{a|M+s\xi|}|\He_r(\xi)|\big] \le s^{-r}L\,e^{a|M|}\,\big(\E e^{2as|\xi|}\big)^{1/2}(r!)^{1/2}$, which is $C_r e^{a|M|}$ uniformly for $s \in [\tfrac\sigma2, 2\sigma]$. The matrix identity is entrywise substitution in Lemma~\ref{lem:mehler}, $n=1$.
+\end{proof}
+
+\section{The two floors}\label{sec:pillars}
+
+We now build the lower bound on $H + N$ that the assembly will consume. It has two summands, obtained from disjoint Mehler bands and by completely different mechanisms.
+
+The first is the \emph{matched} floor. Because the observation noise $Z$ enters feature $j$ through the same vector $\theta_j$ as the signal does, the features' first-order noise response and their first-order signal response are governed by the same derivative $\psi'_{s_j}$. The next lemma says that the former always dominates the latter, as a matrix inequality --- and note what makes this work: the gap is a Hadamard product of two positive semidefinite matrices, so Schur's theorem closes it. This is finite-$k$, finite-$d$, and exact, with no error term, which is precisely why it will survive being perturbed later.
+
+\begin{lemma}[Schur domination: the matched noise floor]\label{lem:schur}
+Let $\bar\alpha_j := \E_{x_0}[\alpha_j]$ and $\bar B := \Theta^\top\diag(\bar\alpha) \in \R^{d\times k}$ (columns $\bar\alpha_j\theta_j$). Then
+\[
+N^{(1)} - \sigma^2\,\bar B^\top\bar B \;=\; \sigma^2\,(\Theta\Theta^\top)\circ\Cov(\alpha) \;\succeq\; 0 .
+\]
+\end{lemma}
+
+\begin{proof}
+$(\bar B^\top \bar B)_{ij} = \bar\alpha_i\bar\alpha_j\,\theta_i^\top\theta_j$, so the difference is $\sigma^2(\Theta\Theta^\top)\circ\big(\E[\alpha\alpha^\top] - \bar\alpha\bar\alpha^\top\big)$; both Hadamard factors are PSD, and the Schur product theorem applies.
+\end{proof}
+
+\noindent That accounts for the linear part of the comparison. What it does \emph{not} give is any strictly positive ridge: if the features' signal directions $B$ differ from the matched directions $\bar B$, the difference has to be paid for out of some noise the matched model does not have. That is what the higher Mehler orders provide. The next lemma extracts the floor at a single order $n$; the essential feature is that it comes out \emph{diagonal} --- each feature's own Mehler energy on its own diagonal entry --- and preserving that diagonal structure, rather than collapsing it to a multiple of the identity, is what makes the final bound per-feature.
+
+\begin{lemma}[Ridge floor at a single Mehler order]\label{lem:floor}
+Deterministically in $\Theta$, for every $n \ge 1$,
+\[
+N^{(n)} \;\succeq\; n!\ \lmin\!\big(R^{\circ n}\big)\ \diag\!\Big(\E_{x_0}\big[c_{n}(u_j, s_j)^2\big]\Big)_{j\le k} .
+\]
+Note the floor is \emph{diagonal}, not a multiple of the identity: each feature contributes its own Mehler energy. Lemma~\ref{lem:agg} sums this over a band, and Theorem~\ref{thm:master} uses the diagonal form directly.
+\end{lemma}
+
+\begin{proof}
+Pointwise in $x_0$: $R^{\circ n}\circ c c^\top = D_c R^{\circ n} D_c \succeq \lmin(R^{\circ n})\, D_c^2$ with $c = c^{(n)}$; note $\lmin(R^{\circ n})$ depends only on $\Theta$ and passes through $\E_{x_0}$.
+\end{proof}
+
+\noindent A single order is not quite enough. An individual coefficient $c_n(\cdot,s)$ can vanish at isolated points, so a floor built from one order can degenerate for particular features; summing a \emph{band} of consecutive orders removes this, since all the terms are nonnegative and only the whole band can vanish at once. (Section~\ref{sec:activation} shows this is not a cosmetic worry --- Remark~\ref{rem:threekink} exhibits an activation where two consecutive orders vanish simultaneously at an interior point --- and Proposition~\ref{prop:a2} supplies the band width needed.) The following lemma is the banded version. Its first sentence is what Part~I uses; the clause about $k \le c_0d^{\,n_0}(\log d)^{-A}$ is a forward look at Part~II and plays no role in Theorem~\ref{thm:master}.
+
+\begin{lemma}[Aggregate ridge floor]\label{lem:agg}
+Fix $2 \le n_0 \le N < \infty$. Deterministically in $\Theta$,
+\[
+N \;\succeq\; \Big(\min_{n_0 \le n \le N}\lmin(R^{\circ n})\Big)\cdot
+\diag\Big(\E_{x_0}\Big[\textstyle\sum_{n=n_0}^{N} n!\,c_n(u_j,s_j)^2\Big]\Big)_{j \le k},
+\]
+and if $k \le c_0 d^{\,n_0}(\log d)^{-A}$ then $\min_{n_0\le n\le N}\lmin(R^{\circ n}) \ge 1 - o_d(1)$ with probability $1 - o_d(1)$. In the notation of Theorem~\ref{thm:master} this reads $\sum_{n=n_0}^N N^{(n)} \succeq \rho_*\diag(\gamma_j)_{j\le k}$, which is the form the assembly consumes.
+\end{lemma}
+
+\begin{proof}
+By Lemma~\ref{lem:mehler} all $N^{(n)} \succeq 0$, so $N \succeq \sum_{n=n_0}^N N^{(n)}$, and the proof of Lemma~\ref{lem:floor} applied at each order gives $N^{(n)} \succeq n!\,\lmin(R^{\circ n})\diag(\E[c_n(u_j,s_j)^2])_j$; summing and pulling out the minimum eigenvalue yields the display. For the probabilistic claim, apply Lemma~\ref{lem:tensor} at each order $n \in [n_0, N]$ --- the hypothesis $k \le c_0 d^{\,n_0}(\log d)^{-A}$ implies $k \le c_0 d^{\,n}(\log d)^{-A}$ for every such $n$ --- and take a union bound over the $N - n_0 + 1$ orders. The floor enters the assembly only through $H + N \succeq \sigma^2\bar B^\top\bar B + \rho_*\diag(\gamma_j)$.
+\end{proof}
+
+\begin{remark}
+Letting $N \to \infty$ is possible but costs rate: $\lVert R^{\circ n} - I\rVert_{\mathrm{op}} \le \lVert R^{\circ n} - I\rVert_F \le k\max_{i\ne j}|R_{ij}|^{n}$ is decreasing in $n$ once $\max_{i \ne j}|R_{ij}| < 1$, so a single Frobenius bound controls all orders $n \ge n_0$ simultaneously --- but only for $k \lesssim d^{\,n_0/2}$, losing the square root relative to Lemma~\ref{lem:tensor}. A finite window with $N$ chosen as in Proposition~\ref{prop:a2} is the better trade.
+\end{remark}
+
+\section{A calculus for explained variance}\label{sec:calc}
+
+The floors are now in place; what remains is to convert the matrix inequality $H + N \succeq \sigma^2\bar B^\top\bar B + \rho_*\diag(\gamma_j)$ into an inequality between losses. Doing this cleanly requires a little machinery, because the object we must compare is a constrained least-squares optimum, and the perturbation $B = \bar B + \Delta$ sits inside both the linear term and the quadratic form. The device is to work with the explained-variance functional and establish five of its properties: monotonicity in the noise, a splitting inequality that trades one perturbed feature for two unperturbed ones, a block bound that charges the second block against its own noise, and a ceiling for the matched model. The splitting step is what buys the per-feature form, and the block bound is where the diagonal floor pays off.
+
+For a signal matrix $P \in \R^{d\times m}$ and noise $C \in \R^{m\times m}$, $C \succeq 0$, define the explained-variance functional
+\[
+\TT(P, C) := \sup_{V \in \R^{d\times m}}\ \Big\{\, 2\Tr\!\big(V P^\top\Sig\big) - \Tr\!\big(V (P^\top\Sig P + C) V^\top\big) \Big\} .
+\]
+The supremum is finite: if $(P^\top\Sig P + C)v = 0$ then $\Sig^{1/2}Pv = 0$ and hence the linear coefficient $P^\top\Sig$ annihilates the same directions, so the objective is bounded on the quotient.
+
+\begin{lemma}[Calculus of $\TT$]\label{lem:calc}
+\begin{enumerate}
+\item[(a)] $\mathcal L^{\mathrm{RF}}_\sigma = \Tr\Sig - \TT(B,\, H + N)$.
+\item[(b)] Noise monotonicity: $C \succeq C' \succeq 0 \implies \TT(P, C) \le \TT(P, C')$.
+\item[(c)] Splitting: for any decomposition $P = P_1 + P_2$ and $C = C_1 + C_2$ with $C_i \succeq 0$,
+$\TT(P, C) \le \TT\big([P_1\ P_2],\, \diag(C_1, C_2)\big)$, where $[P_1\ P_2] \in \R^{d\times 2m}$.
+\item[(d)] Block bound: if $C_2 \succ 0$, then
+$\TT\big([P_1\ P_2], \diag(C_1, C_2)\big) \le \TT(P_1, C_1) + \op{\Sig}^{2}\,\Tr\!\big(P_2\, C_2^{-1} P_2^\top\big)$; in particular, for $C_2 = \diag(\lambda^{(j)})_j$ the second term is $\op{\Sig}^2\sum_j \lVert P_{2,j}\rVert^2/\lambda^{(j)}$.
+\item[(e)] Linear ceiling: $\TT\big(\bar B,\, \sigma^2\bar B^\top\bar B\big) \le \Tr\big(\Sig\Sy^{-1}\Sig\big)$.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+(a) With the optimal intercept, $\mathcal L^{\mathrm{RF}} = \Tr\Sig - \sup_W\{2\Tr(W\Cov(\phi, x_0)) - \Tr(W\Sigma_\phi W^\top)\}$, and Lemma~\ref{lem:decomp} identifies $\Cov(\phi,x_0) = B^\top\Sig$ and $\Sigma_\phi = B^\top\Sig B + (H+N)$.
+
+(b) The objective is pointwise (in $V$) monotone decreasing in $C$.
+
+(c) Evaluate the block objective at the diagonal $(V_1, V_2) = (V, V)$: the cross-Gram terms recombine,
+\[
+2\Tr(V(P_1{+}P_2)^\top\Sig) - \Tr\big(V[(P_1{+}P_2)^\top\Sig(P_1{+}P_2) + C_1 + C_2]V^\top\big),
+\]
+which is exactly the objective of $\TT(P, C)$; a supremum over the larger set dominates.
+
+(d) Since $\TT$ depends only on second moments, realize a Gaussian surrogate: $x \sim \mathcal N(0, \Sig)$, $\zeta_i = P_i^\top x + \nu_i$ with $(\nu_1, \nu_2) \sim \mathcal N(0, \diag(C_1, C_2))$ independent of $x$; then $\TT([P_1\ P_2], \diag(C_1,C_2)) = \Tr\Sig - \min_{V,b}\E\lVert V\zeta + b - x\rVert^2$, i.e.\ the explained variance $\mathrm{EV}(x; \zeta_1, \zeta_2)$ of the best affine predictor. Let $\hat x$ be the best affine predictor of $x$ from $\zeta_1$, $r := x - \hat x$, and $\tilde\zeta_2 := \zeta_2 - \Pi\zeta_2$ the residual of $\zeta_2$ on $\zeta_1$. The Gram--Schmidt identity for linear regression gives
+\[
+\mathrm{EV}(x; \zeta_1, \zeta_2) = \mathrm{EV}(x; \zeta_1) + \mathrm{EV}(r; \tilde\zeta_2),
+\qquad
+\mathrm{EV}(r;\tilde\zeta_2) = \Tr\big(\Cov(r,\tilde\zeta_2)\,\Cov(\tilde\zeta_2)^{+}\,\Cov(\tilde\zeta_2, r)\big).
+\]
+Two orthogonality facts: (i) $r \perp \operatorname{span}(\zeta_1)$ and $\Pi\zeta_2 \in \operatorname{span}(\zeta_1)$, so $\Cov(r, \tilde\zeta_2) = \Cov(r, \zeta_2) = \Cov(r, x)P_2$ (as $\nu_2 \perp x, \nu_1$); (ii) $\Cov(r, x) = \Cov(r, r + \hat x) = \Cov(r) \preceq \Sig$, so $\op{\Cov(r,x)} \le \bar c$. Moreover $\nu_2 \perp \zeta_1$ survives residualization, so $\Cov(\tilde\zeta_2) \succeq \Cov(\nu_2) = C_2 \succ 0$; hence $\Cov(\tilde\zeta_2)$ is invertible and $\Cov(\tilde\zeta_2)^{+} = \Cov(\tilde\zeta_2)^{-1} \preceq C_2^{-1}$ by operator antitonicity of the inverse. Therefore
+\[
+\mathrm{EV}(r; \tilde\zeta_2) \;\le\; \Tr\big(\Cov(r,x)\,P_2\,C_2^{-1}P_2^\top\,\Cov(x,r)\big) \;\le\; \op{\Cov(r,x)}^2\,\Tr\big(P_2C_2^{-1}P_2^\top\big) \;\le\; \op{\Sig}^2\,\Tr\big(P_2C_2^{-1}P_2^\top\big),
+\]
+and $\mathrm{EV}(x;\zeta_1) = \TT(P_1, C_1)$. For diagonal $C_2$ the trace is $\sum_j\lVert P_{2,j}\rVert^2/\lambda^{(j)}$ with $P_{2,j}$ the $j$-th column.
+
+(e) The quadratic form matrix is $\bar B^\top\Sig\bar B + \sigma^2\bar B^\top\bar B = \bar B^\top\Sy\bar B$, and the linear coefficient satisfies the range condition $\operatorname{range}(\bar B^\top\Sig) \subseteq \operatorname{range}(\bar B^\top\Sy^{1/2})$ (write $\bar B^\top\Sig = (\bar B^\top\Sy^{1/2})(\Sy^{-1/2}\Sig)$), so the supremum is attained and
+\[
+\TT(\bar B, \sigma^2\bar B^\top\bar B) = \Tr\big(\Sig\,\bar B(\bar B^\top\Sy\bar B)^{+}\bar B^\top\Sig\big)
+= \Tr\big(\Sig\,\Sy^{-1/2}\,\Pi_X\,\Sy^{-1/2}\Sig\big), \quad X := \Sy^{1/2}\bar B,
+\]
+using $X(X^\top X)^+X^\top = \Pi_{\operatorname{range}(X)} \preceq I$. The bound follows.
+\end{proof}
+
+\section{The deterministic master inequality}\label{sec:master}
+
+Everything is now assembled. The chain is four inequalities long: discard noise we do not need (b), split the perturbed signal into matched part plus defect (c), charge the defect against the ridge (d), and cap the matched part by the linear denoiser (e). No step involves randomness or asymptotics.
+
+\begin{theorem}[Deterministic master inequality]\label{thm:master}
+Write $u_j = \theta_j^\top x_0 + \epsilon_j$, $s_j = \sigma\lVert\theta_j\rVert$, and define the \emph{per-feature ridge floor} and the band conditioning
+\[
+\gamma_j \;:=\; \E_{x_0}\big[T^{(N)}_{n_0}(u_j, s_j)\big] \;=\; \sum_{n=n_0}^{N} n!\,\E_{x_0}\big[c_n(u_j,s_j)^2\big],
+\qquad
+\rho_* := \min_{n_0 \le n \le N}\lmin\!\big(R^{\circ n}\big),
+\]
+and $\Delta := B - \bar B \in \R^{d\times k}$ with $B, \bar B$ as in Lemmas~\ref{lem:decomp} and~\ref{lem:schur}, so that the $j$-th column of $\Delta$ is the Stein defect $\Delta_{\theta_j,\epsilon_j}$ of Assumption~\ref{ass:stein}.
+
+\noindent Assume $\Sig \succ 0$, the envelope \eqref{eq:envelope}, and the exponential moment condition
+\begin{equation}\label{eq:expmom}
+\E_{x_0}\, e^{2a|\theta_j^\top x_0|} < \infty \quad \text{for each } j \le k
+\end{equation}
+(automatic under the sub-Gaussianity of Assumption~\ref{ass:data}, but needed here since (i) is otherwise stated without it: for heavy-tailed $p_0$ with finite covariance and, say, $\omega = e^t$, the covariances $\Cov(x_0,\phi)$ and $\Sigma_\phi$ need not exist). Then for \textbf{every} realization of $(\Theta,\epsilon)$ with all $\theta_j \ne 0$ --- a zero feature is constant in $y$, changes neither loss, and is discarded; under the Gaussian parameter law $\theta_j \ne 0$ almost surely --- and every width $k$,
+\[
+\boxed{\ \ \mathcal L^{\mathrm{RF}}_\sigma \;\ge\; \mathcal L^{\mathrm{lin}}_\sigma \;-\; \frac{\op{\Sig}^{2}}{\rho_*}\sum_{j=1}^{k} \frac{\big\lVert\Delta_{\theta_j,\epsilon_j}\big\rVert^{2}}{\gamma_j}\ \ }
+\]
+(read as $\mathcal L^{\mathrm{RF}}_\sigma \ge \mathcal L^{\mathrm{lin}}_\sigma$ when $\Delta = 0$, whatever the $\gamma_j$; and as \emph{vacuous}, right-hand side $-\infty$, when $\Delta \ne 0$ and $\rho_* = 0$ or some $\gamma_j = 0$). Note that $\rho_* = 0$ occurs \emph{algebraically} whenever $k$ exceeds the symmetric-tensor dimension: $R^{\circ n}$ is the Gram matrix of the $k$ tensors $\hat\theta_j^{\otimes n} \in \operatorname{Sym}^n(\R^d)$, so $\operatorname{rank} R^{\circ n} \le \binom{d+n-1}{n}$ and $\lmin(R^{\circ n}) = 0$ for $k > \binom{d+n-1}{n}$. Each feature is charged its \emph{own} defect against its \emph{own} floor: a badly-placed feature degrades only its own summand, not the whole bound. No hypothesis on $p_0$ beyond $\Sig \succ 0$ and the exponential-moment condition \eqref{eq:expmom}, no probability, and no $k$--$d$ relationship is needed \emph{for the algebra} --- but one is needed to make the bound informative: below the symmetric-tensor dimension $\rho_* > 0$ generically, and the random-design input (KMC, via Assumption~\ref{ass:budget}) is exactly what makes $\rho_*$ uniformly bounded below there. The two halves of this note thus divide cleanly: Theorem~\ref{thm:master} is unconditional but can be vacuous; Theorem~\ref{thm:prob} spends the $k$--$d$ constraint to rule the vacuous regime out with high probability.
+
+\end{theorem}
+
+\noindent Before the proof, one word on how to read the error term. It is a sum of ratios, one per feature, and each ratio is dimensionally a ``defect per unit of ridge.'' Nothing couples the features to each other except through $\rho_*$, which is a property of the weight \emph{directions} alone. This is why the statement survives arbitrary offsets and arbitrary weight norms: a feature that is badly placed --- one whose offset pushes it into a region where the activation has little Mehler energy --- inflates its own summand and no one else's.
+
+\begin{proof}[Proof of Theorem~\ref{thm:master}]
+
+Fix any $(\Theta,\epsilon)$ with all $\theta_j \ne 0$, and set $D := \rho_*\diag(\gamma_j)_{j\le k}$. By Lemma~\ref{lem:agg}, $\sum_{n=n_0}^N N^{(n)} \succeq D$. By Lemma~\ref{lem:schur}, $N^{(1)} \succeq \sigma^2\bar B^\top\bar B$; by Lemma~\ref{lem:mehler}, $N^{(n)} \succeq 0$ for the remaining orders; by Lemma~\ref{lem:decomp}, $H \succeq 0$. Summing (the bands $\{1\}$ and $[n_0,N]$ are disjoint since $n_0 \ge 2$),
+\[
+H + N \;\succeq\; \sigma^2 \bar B^\top\bar B \;+\; D .
+\]
+Branch on $\Delta$ first. If $\Delta = 0$, no floor is needed: the chain below runs (b) $\to$ (e) directly with $C_2 = 0$, giving $\mathcal L^{\mathrm{RF}}_\sigma \ge \mathcal L^{\mathrm{lin}}_\sigma$ irrespective of $\rho_*$ and the $\gamma_j$ --- this is the Gaussian case of Corollary~\ref{cor:gauss}, and it is \emph{not} vacuous at $\rho_* = 0$. Assume henceforth $\Delta \ne 0$. If now $\rho_* = 0$ or some $\gamma_j = 0$ the claimed bound is vacuous, so assume $D = \rho_*\diag(\gamma_j) \succ 0$. Apply Lemma~\ref{lem:calc} in the order (b), (c) with $(P_1, P_2) = (\bar B, \Delta)$ and $(C_1, C_2) = (\sigma^2\bar B^\top\bar B,\ D)$, then (d), then (e):
+\[
+\TT(B,\, H{+}N)
+\;\overset{(b)}{\le}\; \TT\big(B,\ \sigma^2\bar B^\top\bar B + D\big)
+\;\overset{(c)}{\le}\; \TT\big([\bar B\ \Delta],\ \diag(\sigma^2\bar B^\top\bar B,\ D)\big)
+\;\overset{(d)}{\le}\; \TT\big(\bar B,\, \sigma^2\bar B^\top\bar B\big) + \op{\Sig}^{2}\Tr\big(\Delta D^{-1}\Delta^\top\big)
+\;\overset{(e)}{\le}\; \Tr\big(\Sig\Sy^{-1}\Sig\big) + \frac{\op{\Sig}^{2}}{\rho_*}\sum_{j\le k}\frac{\lVert\Delta_{\theta_j,\epsilon_j}\rVert^2}{\gamma_j},
+\]
+where in (d) the constant is sharp because $\Cov(r) \preceq \Sig$ gives $\op{\Cov(r,x)} \le \op{\Sig}$. Lemma~\ref{lem:calc}(a) converts this to the boxed inequality of the theorem. Nothing here constrains $k$, $d$, or the offsets, and $p_0$ enters only through $\Sig \succ 0$ and the exponential-moment condition \eqref{eq:expmom}.
+
+\end{proof}
+
+\section{The deterministic bound in the Gaussian case}\label{sec:gauss}
+
+Theorem~\ref{thm:master} has one immediate specialization that serves as a consistency check on the whole architecture: when $p_0$ is Gaussian the defect vanishes identically, the error term disappears, and the bound holds with no further hypotheses at all.
+
+\begin{corollary}[Gaussian prior: unconditional linearity]\label{cor:gauss}
+Suppose $x_0 \sim \mathcal N(0, \Sig)$ with $\Sig \succ 0$, and let $\omega$ satisfy \eqref{eq:envelope}. Then
+\[
+\mathcal L^{\mathrm{RF}}_\sigma \;\ge\; \mathcal L^{\mathrm{lin}}_\sigma
+\]
+\emph{deterministically in $\Theta$}, for every width $k$, every activation $\omega$, every set of offsets, and with no error term. Neither the non-degeneracy clause of Assumption~\ref{ass:act}, nor Assumption~\ref{ass:stein}, nor the budget constraint of Assumption~\ref{ass:budget} is used; Lemmas~\ref{lem:agg},~\ref{lem:tensor},~\ref{lem:ratio} and~\ref{lem:defect} are not invoked. Since $\mathcal L^{\mathrm{RF}}_\sigma$ is nonincreasing in $k$ and the bound is uniform in $k$, the inequality passes to the infinite-width (kernel) limit.
+\end{corollary}
+
+\begin{proof}
+By Lemma~\ref{lem:c1}, $\psi_{s}$ is smooth with exponentially bounded derivatives ($|\psi_s^{(r)}| \le C_re^{a|\cdot|}$), which together with \eqref{eq:expmom} legitimizes Stein's lemma for $f = \psi_{s_j}$: for $x_0$ Gaussian,
+\[
+\Cov\big(x_0,\ \psi_{s_j}(\theta_j^\top x_0 + \epsilon_j)\big) \;=\; \Sig\,\theta_j\,\E\big[\psi_{s_j}'(u_j)\big] \;=\; \Sig\,\theta_j\,\bar\alpha_j ,
+\]
+i.e.\ $\beta_j = \bar\alpha_j\theta_j$ and hence $B = \bar B$, $\Delta \equiv 0$, for \emph{every} $\theta_j$ --- so no norm-truncation event is needed and the width coupling $s_j = \sigma\lVert\theta_j\rVert$ plays no role. By Lemma~\ref{lem:decomp} ($H \succeq 0$), Lemma~\ref{lem:mehler} ($N^{(n)} \succeq 0$ for $n \ge 2$) and Lemma~\ref{lem:schur} ($N^{(1)} \succeq \sigma^2\bar B^\top\bar B$),
+\[
+H + N \;\succeq\; \sigma^2\bar B^\top\bar B .
+\]
+Lemma~\ref{lem:calc}(b) then (e) gives $\TT(B, H+N) = \TT(\bar B, H+N) \le \TT(\bar B, \sigma^2\bar B^\top\bar B) \le \Tr(\Sig\Sy^{-1}\Sig)$, and Lemma~\ref{lem:calc}(a) converts this to the claim. Equivalently: this is Theorem~\ref{thm:master}(i) with $\Fro{\Delta} = 0$, so the error term vanishes identically and neither $\rho_*$ nor $\gamma_*$ need be estimated.
+\end{proof}
+
+\begin{remark}[The corollary is a consistency check, not a result]\label{rem:trivial}
+Corollary~\ref{cor:gauss} carries no information content: for a Gaussian prior the Bayes denoiser $\E[x_0\mid y]$ is exactly affine, so $\mathcal L^{\mathrm{lin}}_\sigma$ is the MMSE and \emph{no} estimator of any kind can beat it. Its value is diagnostic. The architecture of Section~\ref{sec:master} should degenerate to this triviality when $\varepsilon_d = 0$, and it does --- every hypothesis beyond $\Sig \succ 0$ switches off, the probability disappears, and the threshold $k_*$ becomes $+\infty$. This is the sharpest available evidence that Assumptions~\ref{ass:act}--\ref{ass:budget} are load-bearing rather than decorative: they exist \emph{solely} to pay for $\Delta \ne 0$, and they charge nothing when $\Delta = 0$.
+\end{remark}
+
+\part{The probabilistic form}
+
+\noindent Theorem~\ref{thm:master} is exact but it is not yet a statement about widths, and it is worth being precise about what is missing. Two quantities in it are properties of the \emph{design} rather than of the model:
+
+\begin{enumerate}
+\item[(1)] \emph{The band conditioning $\rho_*$.} This is $\min_{n_0\le n\le N}\lmin(R^{\circ n})$, and it vanishes \emph{identically} --- not just typically --- once $k$ exceeds $\binom{d+n-1}{n}$, since $R^{\circ n}$ is then a Gram matrix of more vectors than the ambient symmetric-tensor space has dimensions. Below that scale it is positive for generic directions, but ``generic'' is not a bound. Making $\rho_*$ bounded below \emph{uniformly}, with high probability, is exactly what a feature budget buys, and it is the only thing the budget is for.
+\item[(2)] \emph{The defect sum $\sum_j \lVert\Delta_j\rVert^2/\gamma_j$.} Theorem~\ref{thm:master} says nothing about its size; for a fixed adversarial design it could be anything. Controlling it requires (a) regularity on $p_0$, so that each individual defect is small --- this is the Gaussian-universality condition, and it is where the cumulants of the prior enter --- and (b) regularity on the activation and the offsets, so that the denominators $\gamma_j$ do not degenerate.
+\end{enumerate}
+
+\noindent Part~II supplies both. The extra hypotheses are collected first, then the three lemmas that discharge them --- tensor conditioning for (1), the cumulant bound and the bias-integrability bound for (2) --- and then the theorem. Nothing in Part~I is revisited or weakened.
+
+\section{Additional assumptions for the random design}\label{sec:assumptions2}
+
+\begin{assumption}[Data regularity]\label{ass:data}
+$\underline c\, I \preceq \Sig \preceq \bar c\, I$ for constants $0 < \underline c \le \bar c$, and the coordinates of $x_0$ are sub-Gaussian with a uniform proxy constant $K$.
+\end{assumption}
+
+\begin{assumption}[Activation non-degeneracy]\label{ass:act}
+There are an integer $n_0 \ge 2$ and a finite $N \ge n_0$ such that the \emph{band modulus} of the tail energy,
+\begin{equation}\label{eq:nondeg}
+m(R) \;:=\; \inf\Big\{\, T^{(N)}_{n_0}(M,s) := \textstyle\sum_{n=n_0}^{N} n!\,c_n(M,s)^2 \ :\ |M| \le R,\ s \in [\tfrac\sigma2, 2\sigma] \,\Big\},
+\end{equation}
+is strictly positive for every finite $R$.
+\end{assumption}
+
+\noindent The band $[n_0,N]$ rather than a single order is what makes positivity of $m(R)$ attainable with no exceptional set (Corollary~\ref{cor:tail}). Note the quantifier: a \emph{single} finite $N$ must make $m(R) > 0$ for \emph{every} $R$; Proposition~\ref{prop:a2} delivers only the weaker per-$R$ statement, so Assumption~\ref{ass:act} as written is a genuine hypothesis in general. The \emph{decay rate} of $m(R)$ as $R \to \infty$ is a further activation-specific property, coupled to the offset scale by Assumption~\ref{ass:bias}. For bounded offsets neither issue arises, and the assumption may be weakened:
+
+\begin{assumption}[Activation, compact-offset variant]\label{ass:actprime}
+There are $n_0 \ge 2$, a finite $N$, and a level $R_0 \ge 2\tau_\epsilon + 4\sqrt{\bar c}$, where $\tau_\epsilon := \sup|\operatorname{supp}(\text{law of }\epsilon_j)| < \infty$, such that $m(R_0) > 0$ with the band $[n_0, N]$.
+\end{assumption}
+
+\noindent By Proposition~\ref{prop:a2}, Assumption~\ref{ass:actprime} holds \emph{automatically} for every non-polynomial $\omega$ once the offset law is compactly supported --- take $N = N(R_0)$ --- and Lemma~\ref{lem:ratio} evaluates the modulus only at arguments $R(\epsilon) = 2|\epsilon| + 4\sqrt{\bar c} \le 2\tau_\epsilon + 4\sqrt{\bar c} \le R_0$, so every statement below holds verbatim with Assumption~\ref{ass:act} replaced by Assumption~\ref{ass:actprime} and with $\Xi \le m(R_0)^{-1} < \infty$, making Assumption~\ref{ass:bias} automatic as well. The unbounded-offset case genuinely needs Assumption~\ref{ass:act} in its fixed-band-for-all-$R$ form.
+
+\noindent Section~\ref{sec:activation} shows that the second clause is not really an assumption: for \emph{every} non-polynomial $\omega$ per-$R$ positivity holds with $n_0$ arbitrary and an $R$-dependent band (Proposition~\ref{prop:a2}), which makes the compact-offset variant Assumption~\ref{ass:actprime} automatic for compactly supported offset laws; for unbounded offsets both the fixed band and the modulus \emph{rate} are genuine hypotheses, verified for finitely-kinked piecewise-linear activations (Proposition~\ref{prop:a2b}, Remarks~\ref{rem:threekink},~\ref{rem:no-rate}). Polynomial activations are the genuine exception, and they cap the theorem at their degree (Corollary~\ref{cor:polycap}).
+
+\begin{assumption}[Stein regularity at level $\varepsilon_d$]\label{ass:stein}
+For $\theta \in \R^d$ and $\epsilon \in \R$ set $s(\theta) := \sigma\lVert\theta\rVert$, $\bar\alpha(\theta,\epsilon) := \E_{x_0}\big[\psi_{s(\theta)}'(\theta^\top x_0 + \epsilon)\big]$ and define the \emph{Stein defect}
+\[
+\Delta_{\theta,\epsilon} \;:=\; \Sig^{-1}\Cov\!\big(x_0,\ \psi_{s(\theta)}(\theta^\top x_0 + \epsilon)\big) \;-\; \bar\alpha(\theta,\epsilon)\,\theta \ \in \R^d .
+\]
+Then, with the expectation taken jointly over the parameter law,
+\[
+\E_{\theta \sim \mathcal N(0, I_d/d),\ \epsilon \sim \mathcal N(0,\sigma_\epsilon^2)}\ \lVert\Delta_{\theta,\epsilon}\rVert^2 \;\le\; \varepsilon_d^2 .
+\]
+This is weaker than a supremum over offsets, and is exactly what the proof consumes (a single first-moment bound, Markov'd once).
+\end{assumption}
+
+\begin{assumption}[Bias compatibility]\label{ass:bias}
+The offset scale is compatible with the activation's modulus decay:
+\begin{equation}\label{eq:biasbound}
+\Xi \;:=\; \Big(\E_{\epsilon\sim\mathcal N(0,\sigma_\epsilon^2)}\Big[\, m\big(2|\epsilon| + 4\sqrt{\bar c}\,\big)^{-2}\,\Big]\Big)^{1/2} \;<\; \infty .
+\end{equation}
+Sufficient condition: if $m(R) \ge \kappa e^{-bR^2}$ for some $\kappa > 0$, $b \ge 0$ (Gaussian-type modulus --- proved for finitely-kinked piecewise-linear activations in Proposition~\ref{prop:a2b}), then \eqref{eq:biasbound} holds whenever $16b\sigma_\epsilon^2 < 1$. Explicitly, by the tunable Young inequality $R^2 = (2|\epsilon| + 4\sqrt{\bar c})^2 \le 4(1+t)\epsilon^2 + 16(1+t^{-1})\bar c$ for every $t > 0$,
+\[
+\Xi \;\le\; \kappa^{-1}\,e^{16b(1+t^{-1})\bar c}\ \big(1 - 16b(1+t)\sigma_\epsilon^2\big)^{-1/4}
+\qquad \text{for any } t > 0 \text{ with } 16b(1+t)\sigma_\epsilon^2 < 1,
+\]
+using $\E e^{c\epsilon^2} = (1-2c\sigma_\epsilon^2)^{-1/2}$ at $c = 8b(1+t)$; letting $t \downarrow 0$ shows $16b\sigma_\epsilon^2 < 1$ suffices, at the price of a constant that diverges as the inequality saturates. It is vacuous when $m$ is bounded below ($b=0$), and for compactly supported offset laws it holds with no condition.
+\end{assumption}
+
+\begin{assumption}[Sub-polynomial feature budget]\label{ass:budget}
+$k \le c_0\, d^{\,n_0} (\log d)^{-A}$ for the constants $c_0, A$ of Lemma~\ref{lem:tensor} (from \cite{MMM21,MZ22}). When the activation hypothesis holds with $n_0$ arbitrary (compact offsets via Assumption~\ref{ass:actprime}, or piecewise-linear activations via Proposition~\ref{prop:a2b}), this is no constraint.
+\end{assumption}
+
+If $x_0$ is Gaussian, $\Delta \equiv 0$ by Stein's lemma; Assumption~\ref{ass:stein} quantifies membership in the Gaussian universality class, and Section~\ref{sec:defect} \emph{proves} it, with explicit cumulant rates, for product measures. Section~\ref{sec:activation} discharges the compact-offset variant of Assumption~\ref{ass:act} for every non-polynomial $\omega$ when the offset law is compactly supported, and Assumptions~\ref{ass:act}--\ref{ass:bias} in full for finitely-kinked piecewise-linear activations when it is Gaussian with $\sigma_\epsilon < \sigma/8$; in general both are hypotheses.
+
+\section{Tensor Gram conditioning}\label{sec:tensor}
+
+This section handles item~(1): keeping $\rho_*$ away from zero. The mechanism is that random directions on a high-dimensional sphere are nearly orthogonal, so $R$ is close to the identity off the diagonal, and raising it to a Hadamard power $n$ suppresses the off-diagonal entries like $d^{-n/2}$ --- which buys room for $k$ up to $d^{\,n}$ rather than merely $d$. Making this quantitative is the one place the note imports an external result, isolated below as (KMC).
+
+\begin{lemma}[Tensor Gram conditioning]\label{lem:tensor}
+Fix $n \ge 2$. There are constants $c_0, A$ such that if $k \le c_0\, d^{\,n}(\log d)^{-A}$, then with probability $1 - o_d(1)$,
+\[
+\lmin\!\big(R^{\circ n}\big) \;\ge\; 1 - o_d(1) .
+\]
+\end{lemma}
+
+\begin{proof}
+The $\hat\theta_j$ are i.i.d.\ uniform on $S^{d-1}$. Let $\mu_d$ be the law of $t = \hat\theta_1^\top\hat\theta_2$ and let $\{Q_{m,d}\}_{m\ge0}$ be the Gegenbauer polynomials orthogonal for $\mu_d$, normalized so $Q_{m,d}(1) = 1$; write $N_{m,d} := \dim$ of degree-$m$ spherical harmonics, so $\lVert Q_{m,d}\rVert_{L^2(\mu_d)}^2 = N_{m,d}^{-1}$ and $N_{m,d} \asymp_m d^m$. Expand
+\[
+t^n = \sum_{0 \le m \le n,\ m \equiv n\, (2)} b_{m,d}\, Q_{m,d}(t), \qquad b_{m,d} = N_{m,d}\,\langle t^n, Q_{m,d}\rangle_{L^2(\mu_d)} .
+\]
+Three facts about the coefficients. (i) \emph{Nonnegativity:} the kernel $(x,y)\mapsto (x^\top y)^n$ is positive semidefinite on the sphere (it is the Gram kernel of $x^{\otimes n}$), so by Schoenberg's theorem all $b_{m,d} \ge 0$. (ii) \emph{Normalization:} evaluating at $t=1$ gives $\sum_m b_{m,d} = 1$. (iii) \emph{Leading dominance:} for $m \le n-2$, Cauchy--Schwarz gives
+\[
+b_{m,d} \le N_{m,d}\,\lVert t^n\rVert_{L^2(\mu_d)}\lVert Q_{m,d}\rVert_{L^2(\mu_d)} = N_{m,d}^{1/2}\,\lVert t^n\rVert_{L^2(\mu_d)} \lesssim_n d^{m/2}\cdot d^{-n/2} \le d^{-1},
+\]
+using $\E_{\mu_d}[t^{2n}] = \prod_{r=0}^{n-1}\frac{2r+1}{d+2r} \asymp_n d^{-n}$. Hence $b_{n,d} \ge 1 - C_n/d$.
+
+Now, by the addition theorem, each matrix $Q^{(m)} := \big(Q_{m,d}(R_{ij})\big)_{ij}$ is the Gram matrix of the unit vectors $N_{m,d}^{-1/2}\big(Y_{m,\ell}(\hat\theta_j)\big)_{\ell \le N_{m,d}}$, hence PSD with unit diagonal. Therefore
+\[
+R^{\circ n} = \sum_m b_{m,d}\, Q^{(m)} \;\succeq\; b_{n,d}\, Q^{(n)} .
+\]
+The external input is the following kernel-matrix concentration statement, which we quote as a hypothesis in the exact form consumed:
+\begin{quote}
+(KMC) \emph{For $\hat\theta_1,\dots,\hat\theta_k$ i.i.d.\ uniform on $S^{d-1}$, $n \ge 2$ fixed, and $Q^{(n)}_{ij} := Q_{n,d}(\hat\theta_i^\top\hat\theta_j)$ with $Q_{n,d}$ Gegenbauer-normalized to $Q_{n,d}(1) = 1$: there are $c_0, A$ with $\op{Q^{(n)} - I_k} = o_d(1)$ in probability whenever $k \le c_0\,d^{\,n}(\log d)^{-A}$.}
+\end{quote}
+Statements of this type are established in \cite{MMM21} (hypercontractivity-based kernel matrix concentration in the polynomial regime $k \asymp d^n$) and \cite{MZ22} (via matrix Chernoff for the degree-$n$ Gegenbauer component); the normalization there is per spherical-harmonic count, i.e.\ their Gram is $N_{n,d}^{-1}YY^\top$ with unit diagonal in expectation, which matches $Q^{(n)}$ after the addition theorem as above. Verifying the exact constants and normalization against the quoted theorems, and importing their precise $(\log d)^A$ exponents, is deliberately isolated in (KMC) and is the only unverified external input to this document besides Mehler's identity. Granting (KMC), $\lmin(R^{\circ n}) \ge b_{n,d}\,(1 - o_d(1)) = 1 - o_d(1)$.
+\end{proof}
+
+\begin{remark}\label{rem:mehler-role}
+Lemmas~\ref{lem:schur}--\ref{lem:tensor} settle the bookkeeping question of where the Mehler orders of $\Sigma_\phi$ act. The $n=1$ order is not noise to be discarded: it supplies \emph{exactly} the $\sigma^2$-noise matched to the signal channel (the noise $Z$ enters each feature through the same vector $\theta_j$ as $x_0$, and at first Hermite order the feature's noise response provably dominates its mean signal response --- that is Lemma~\ref{lem:schur}). The orders $n \ge 2$ are also load-bearing: their diagonal mass, made effective by the off-diagonal decay $\rho_{ij}^n = O(d^{-n/2})$ through Lemma~\ref{lem:tensor}, is the full-rank ridge that neutralizes the Stein defect below. Nothing in the proof deletes higher Mehler terms; the original ``vanishing'' heuristic is realized as the concentration $R^{\circ n} \approx I$, on the noise side of the ledger.
+\end{remark}
+
+\section{The Stein defect under cumulant delocalization}\label{sec:defect}
+
+We turn to item~(2), and first to the numerator. The Stein defect measures the failure of Gaussian integration by parts along a random projection; the following lemma prices it in terms of the prior's cumulants, and shows the leading nonvanishing cumulant order sets the rate.
+
+This section discharges Assumption~\ref{ass:stein} for product measures, with the cumulant rates that generate the threshold table. Write $\kappa_{3,a} := \E[x_{0,a}^3]$ and $\kappa_{4,a} := \E[x_{0,a}^4] - 3\sigma_a^4$ for the coordinate cumulants, $\sigma_a^2 := \Var(x_{0,a})$.
+
+\begin{lemma}[Defect bound, product measures]\label{lem:defect}
+Let $p_0$ be a product measure satisfying Assumption~\ref{ass:data}. Then for every fixed $\epsilon \in \R$,
+\[
+\E_{\theta\sim\mathcal N(0, I_d/d)}\lVert\Delta_{\theta,\epsilon}\rVert^2 \;\le\; C\,e^{2a|\epsilon|}\,\frac{1 + \Fro{\kappa_3}^2}{d^{2}},
+\]
+and if every coordinate is symmetric about $0$ (so $\kappa_{3,a} = 0$),
+\[
+\E_{\theta}\lVert\Delta_{\theta,\epsilon}\rVert^2 \;\le\; C\,e^{2a|\epsilon|}\,\frac{1+\Fro{\kappa_4}^2}{d^3},
+\]
+with $C = C(K, \sigma, L, a, \underline c, \bar c)$. The factor $e^{2a|\epsilon|}$ \emph{cannot} be removed when $a > 0$: for $\omega(t) = e^t$ and centered Rademacher coordinates one computes exactly $\Delta_a = e^{\epsilon + s^2/2}\prod_{b\ne a}\cosh\theta_b\,(\sinh\theta_a - \theta_a\cosh\theta_a)$, so $\E_\theta\lVert\Delta_{\theta,\epsilon}\rVert^2 = e^{2\epsilon}C_d$ and the dependence is sharp. Averaging over $\epsilon \sim \mathcal N(0,\sigma_\epsilon^2)$, whose two-sided exponential moment $\E e^{2a|\epsilon|} \le 2e^{2a^2\sigma_\epsilon^2}$ is finite for every $\sigma_\epsilon$, yields
+\[
+\varepsilon_d^2 \;\le\; C(\sigma_\epsilon)\,\frac{1+\Fro{\kappa_3}^2}{d^2}
+\qquad\text{(resp.\ } \tfrac{1+\Fro{\kappa_4}^2}{d^3}\text{)},
+\qquad C(\sigma_\epsilon) := 2Ce^{2a^2\sigma_\epsilon^2},
+\]
+for the joint quantity of Assumption~\ref{ass:stein}; constants necessarily depend on $\sigma_\epsilon$ once $a > 0$. For polynomial-growth activations the dependence weakens to a polynomial factor in $|\epsilon|$, integrable against any Gaussian, but it does not vanish.
+\end{lemma}
+
+\begin{proof}
+We split $\E_\theta$ over the core $\{\lVert\theta\rVert \in [\tfrac12, 2]\}$ and its two tails, because the derivative envelopes of Lemma~\ref{lem:c1} are uniform only for $s = \sigma\lVert\theta\rVert \in [\tfrac\sigma2, 2\sigma]$ --- for $s < \tfrac\sigma2$ they degrade like $s^{-r}$, so the Taylor computation below is \emph{not} valid at small norms and the small-norm event must be handled directly, not waved away. On both tails use the crude, all-$s$ bound
+\[
+\lVert\Delta_{\theta,\epsilon}\rVert \;\le\; \underline c^{-1}\big\lVert\Cov(x_0, \psi_s(u))\big\rVert + \big|\E\psi_s'(u)\big|\,\lVert\theta\rVert
+\;\le\; C\,e^{a|\epsilon|}\big(1 + \lVert\theta\rVert\big)e^{Ca^2(1+\lVert\theta\rVert^2)} ,
+\]
+where the first term uses only the $s$-uniform envelope $|\psi_s(M)| \le Le^{a|M|}e^{a^2s^2/2}$ (smoothing never inflates the envelope beyond this) together with Cauchy--Schwarz against sub-Gaussian moments of $u$, and the second term uses $|\psi_s'| \le Cs^{-1}e^{a|\cdot|}e^{a^2s^2}$ --- which blows up as $s \to 0$ --- multiplied by $\lVert\theta\rVert = s/\sigma$, so that the product $s^{-1}\lVert\theta\rVert = 1/\sigma$ stays bounded: the coupling of the smoothing width to the weight norm is exactly what tames the small-norm regime. Then, by Cauchy--Schwarz, the small-norm tail contributes $\E[\lVert\Delta\rVert^2\mathbf 1_{\lVert\theta\rVert<1/2}] \le (\E\lVert\Delta\rVert^4)^{1/2}\,\mathbb P(\lVert\theta\rVert < \tfrac12)^{1/2} \le Ce^{2a|\epsilon|}e^{-cd}$, and likewise the large-norm tail with $\mathbb P(\lVert\theta\rVert > 2)^{1/2} \le e^{-cd}$ (the fourth moment of the crude bound is finite against the Gaussian $\theta$-law for $d$ larger than a constant depending on $a$). Both are $o(d^{-3})$ and are absorbed into the constants. For the remainder of the proof, fix $\theta$ in the core, so all envelopes of Lemma~\ref{lem:c1} apply as stated. Abbreviate $\psi := \psi_{s(\theta)}$, $u := \theta^\top x_0 + \epsilon$, and for each coordinate $a$, $u_{-a} := u - \theta_a x_{0,a}$, which is independent of $x_{0,a}$. All moments of the form $\E\big[e^{a|u_{-a}|}|x_{0,a}|^r\big]$, $r \le 6$, are bounded by $Ce^{a|\epsilon|}$: writing $u_{-a} = \epsilon + (u_{-a} - \epsilon)$ with $u_{-a} - \epsilon$ a sub-Gaussian linear form independent of $x_{0,a}$, the deterministic factor $e^{a|\epsilon|}$ splits off and the rest is bounded uniformly. This factor propagates linearly into every term of the two expansions below --- it does \emph{not} cancel between them, since $\Delta$ is homogeneous of degree one in $\omega$ --- and squaring produces the $e^{2a|\epsilon|}$ in the statement; write $m^{(r)}_{-a} := \E[\psi^{(r)}(u_{-a})]$, so $|m^{(r)}_{-a}| \le C$ for $r \le 4$ by Lemma~\ref{lem:c1}.
+
+\emph{Skewed case.} Since $\Sig = \diag(\sigma_a^2)$, the $a$-th coordinate of the defect is $\Delta_a = \sigma_a^{-2}\Cov(x_{0,a}, \psi(u)) - \bar\alpha\,\theta_a$. Taylor-expand $\psi(u) = \psi(u_{-a} + \theta_a x_{0,a})$ to second order with third-order remainder:
+\[
+\E[x_{0,a}\psi(u)]
+= \underbrace{\E[x_{0,a}]\,m^{(0)}_{-a}}_{=0}
++ \theta_a \sigma_a^2\, m^{(1)}_{-a}
++ \tfrac{\theta_a^2}{2}\,\kappa_{3,a}\, m^{(2)}_{-a}
++ \mathcal R_a,
+\qquad |\mathcal R_a| \le C\,|\theta_a|^3,
+\]
+where independence of $x_{0,a}$ and $u_{-a}$ factorizes each term, and the remainder uses $|\psi'''| \le Ce^{a|\cdot|}$ and the moment bounds. Similarly,
+\[
+\bar\alpha = \E[\psi'(u)] = m^{(1)}_{-a} + \underbrace{\theta_a\,\E[x_{0,a}]\,m^{(2)}_{-a}}_{=0} + O(\theta_a^2).
+\]
+Subtracting,
+\[
+\Delta_a = \frac{\theta_a^2}{2\sigma_a^2}\,\kappa_{3,a}\, m^{(2)}_{-a} + O(|\theta_a|^3),
+\qquad\text{hence}\qquad
+\lVert\Delta\rVert^2 \le C\sum_a \big(\theta_a^4\,\kappa_{3,a}^2 + |\theta_a|^6\big).
+\]
+Taking $\E_\theta$ with $\E[\theta_a^4] = 3/d^2$, $\E[\theta_a^6] = 15/d^3$ gives the first bound.
+
+\emph{Symmetric case.} Now $\kappa_{3,a} = 0$ and all odd moments of $x_{0,a}$ vanish. Push both expansions one order further:
+\[
+\E[x_{0,a}\psi(u)] = \theta_a\sigma_a^2 m^{(1)}_{-a} + \tfrac{\theta_a^3}{6}\,\E[x_{0,a}^4]\, m^{(3)}_{-a} + O(\theta_a^4),
+\qquad
+\bar\alpha = m^{(1)}_{-a} + \tfrac{\theta_a^2}{2}\,\sigma_a^2\, m^{(3)}_{-a} + O(\theta_a^4),
+\]
+(the odd-order terms drop by symmetry; remainders use $|\psi^{(4)}|$'s envelope). Subtracting, the \emph{Gaussian part} of the fourth moment cancels against the $\bar\alpha$ correction:
+\[
+\Delta_a = \frac{\theta_a^3}{6\sigma_a^2}\,\big(\E[x_{0,a}^4] - 3\sigma_a^4\big)\, m^{(3)}_{-a} + O(\theta_a^4)
+= \frac{\theta_a^3}{6\sigma_a^2}\,\kappa_{4,a}\, m^{(3)}_{-a} + O(\theta_a^4),
+\]
+and $\E[\theta_a^6] = 15/d^3$, $\E[\theta_a^8] = 105/d^4$ give the second bound.
+\end{proof}
+
+\begin{remark}
+The cancellation of $3\sigma_a^4$ in the symmetric case is not cosmetic --- it is the mechanism by which \emph{cumulants}, not moments, price the defect, and it is what makes Gaussian $p_0$ ($\kappa_r \equiv 0$) exactly defect-free at every order. Beyond product measures, verifying Assumption~\ref{ass:stein} is precisely the content of the Gaussian-universality literature (one-dimensional CLT conditions of \cite{HuLu22}, \cite{MS22}); the assumption is stated separately so that the theorem's interface survives outside the product case.
+\end{remark}
+
+\section{Bias integrability}\label{sec:ratio}
+
+The denominators are the remaining piece. Because the offsets are unbounded, a feature can in principle sit arbitrarily far out in the tail of its activation, where the Mehler energy $\gamma_j$ is small and the corresponding ratio large. The next lemma shows this is harmless provided the offset scale is small relative to the rate at which the activation's band modulus decays --- Assumption~\ref{ass:bias} --- and quantifies the exchange rate. Note that no truncation of the offsets is needed anywhere: the per-feature form of Theorem~\ref{thm:master} charges tail features inside a single expectation, which is exactly what makes a plain integrability condition sufficient.
+
+\begin{lemma}[Bias integrability: normalized defect vs.\ raw defect]\label{lem:ratio}
+Under Assumptions~\ref{ass:data},~\ref{ass:act} and~\ref{ass:bias},
+\[
+\check\varepsilon_d^{\,2} \;\le\; \tfrac43\,\Xi\ \hat\varepsilon_d^{\,2},
+\qquad
+\hat\varepsilon_d^{\,4} := \E_{\theta,\epsilon}\big\lVert\Delta_{\theta,\epsilon}\big\rVert^{4}.
+\]
+\end{lemma}
+
+\begin{proof}
+The expectation defining $\check\varepsilon_d^{\,2}$ carries the indicator $\mathbf 1\{\lVert\theta\rVert\in[\tfrac12,2]\}$, so throughout we may fix $(\theta,\epsilon)$ with $\lVert\theta\rVert \in [\tfrac12,2]$; then $s = \sigma\lVert\theta\rVert \in [\tfrac\sigma2, 2\sigma]$, which is exactly the range on which the modulus \eqref{eq:nondeg} of Assumption~\ref{ass:act} is defined --- no estimate outside this range is used anywhere in the proof. Write $u = \theta^\top x_0 + \epsilon$ and $R(\epsilon) := 2|\epsilon| + 4\sqrt{\bar c}$. Since $\Var(u) = \theta^\top\Sig\theta \le 4\bar c$ and $\E u = \epsilon$, Chebyshev gives $\mathbb P\big(|u - \epsilon| \le 4\sqrt{\bar c}\big) \ge \tfrac34$, and on that event $|u| \le |\epsilon| + 4\sqrt{\bar c} \le R(\epsilon)$. Hence, by definition of the modulus,
+\[
+\gamma(\theta,\epsilon) \;=\; \E_{x_0}\big[T^{(N)}_{n_0}(u,s)\big] \;\ge\; m\big(R(\epsilon)\big)\,\mathbb P\big(|u| \le R(\epsilon)\big) \;\ge\; \tfrac34\, m\big(R(\epsilon)\big) \;>\; 0 .
+\]
+Therefore, by Cauchy--Schwarz over the parameter law,
+\[
+\check\varepsilon_d^{\,2} \;\le\; \tfrac43\ \E_{\theta,\epsilon}\!\left[\frac{\lVert\Delta_{\theta,\epsilon}\rVert^2}{m(R(\epsilon))}\right]
+\;\le\; \tfrac43\,\Big(\E\lVert\Delta_{\theta,\epsilon}\rVert^4\Big)^{1/2}\Big(\E_\epsilon\, m\big(R(\epsilon)\big)^{-2}\Big)^{1/2}
+\;=\; \tfrac43\,\Xi\,\hat\varepsilon_d^{\,2}. \qedhere
+\]
+\end{proof}
+
+\begin{remark}[$\hat\varepsilon_d$ and $\varepsilon_d$ have the same rate]\label{rem:fourth}
+Passing to a fourth moment costs nothing in the regime table. The proof of Lemma~\ref{lem:defect} bounds the defect \emph{pointwise} in $\theta$ --- e.g.\ $\lVert\Delta_\theta\rVert^2 \le C\sum_a(\theta_a^4\kappa_{3,a}^2 + |\theta_a|^6)$ in the skewed case --- so squaring that bound and taking $\E_\theta$ with $\E\theta_a^8 = 105/d^4$ reproduces the same rates squared: $\hat\varepsilon_d^{\,2} \le C(1+\Fro{\kappa_3}^2)/d^2$ and, in the symmetric case, $\hat\varepsilon_d^{\,2} \le C(1+\Fro{\kappa_4}^2)/d^3$. Every entry of Corollary~\ref{cor:table} therefore stands with $\varepsilon_d$ replaced by $\hat\varepsilon_d$.
+\end{remark}
+
+\section{The probabilistic theorem}\label{sec:prob}
+
+With $\rho_* \ge \tfrac12$ from Section~\ref{sec:tensor} and the defect sum controlled in mean by Sections~\ref{sec:defect}--\ref{sec:ratio}, Theorem~\ref{thm:master} can be evaluated on a high-probability event. The proof is short, because all the work has been done: it is three tail estimates and a substitution into the deterministic bound.
+
+\begin{theorem}[Probabilistic form]\label{thm:prob}
+
+\noindent Define the \emph{normalized defect}
+\[
+\check\varepsilon_d^{\,2} \;:=\; \E_{\theta \sim \mathcal N(0,I_d/d),\ \epsilon\sim\mathcal N(0,\sigma_\epsilon^2)}\left[\frac{\lVert\Delta_{\theta,\epsilon}\rVert^2}{\gamma(\theta,\epsilon)}\,\mathbf 1\big\{\lVert\theta\rVert\in[\tfrac12,2]\big\}\right],
+\qquad \gamma(\theta,\epsilon) := \E_{x_0}\big[T^{(N)}_{n_0}(\theta^\top x_0 + \epsilon,\ \sigma\lVert\theta\rVert)\big].
+\]
+Then under Assumptions~\ref{ass:data} and~\ref{ass:budget}, for every $\delta \in (0,1)$, with probability at least
+\[
+1 \;-\; \delta \;-\; 2k\,e^{-9d/64} \;-\; \eta_{k,d}, \qquad \eta_{k,d} := \mathbb P\big(\rho_* < \tfrac12\big) \;\xrightarrow[d\to\infty]{}\; 0
+\quad\text{(Lemma~\ref{lem:tensor})},
+\]
+over the parameters $(\Theta,\epsilon)$,
+\[
+\boxed{\ \ \mathcal L^{\mathrm{RF}}_\sigma \;\ge\; \mathcal L^{\mathrm{lin}}_\sigma \;-\; 2\,\op{\Sig}^{2}\cdot\frac{k\,\check\varepsilon_d^{\,2}}{\delta}\ \ }
+\]
+The offsets are never truncated; the norm event on the weights is retained, at the exponentially small cost $2ke^{-9d/64}$ --- unlike an offset truncation, it never inflates the error term, because $\epsilon$ has fixed-scale tails while $\lVert\theta\rVert$ concentrates at rate $d$. Under Assumptions~\ref{ass:act} and~\ref{ass:bias}, Lemma~\ref{lem:ratio} converts $\check\varepsilon_d$ into the raw Stein defect,
+\[
+\check\varepsilon_d^{\,2} \;\le\; \tfrac43\,\Xi\ \hat\varepsilon_d^{\,2},
+\qquad \hat\varepsilon_d^{\,4} := \E_{\theta,\epsilon}\big\lVert\Delta_{\theta,\epsilon}\big\rVert^4 ,
+\]
+so that $\tfrac1d\mathcal L^{\mathrm{RF}}_\sigma \ge \tfrac1d\mathcal L^{\mathrm{lin}}_\sigma - o(1)$ whenever $k\hat\varepsilon_d^{\,2} = o(d)$, i.e.\ below the threshold $k_* = \min\big(d/\hat\varepsilon_d^{\,2},\ d^{\,n_0 - o(1)}\big)$.
+
+\end{theorem}
+
+\begin{proof}[Proof of Theorem~\ref{thm:prob}]
+
+\emph{The three tail estimates.} Let $G_j := \{\lVert\theta_j\rVert \in [\tfrac12, 2]\}$ and define
+\[
+\mathcal E_1 = \bigcap_{j\le k} G_j,
+\qquad
+\mathcal E_2 = \Big\{\rho_* \ge \tfrac12\Big\},
+\qquad
+\mathcal E_3 = \Big\{\ \sum_{j\le k}\frac{\lVert\Delta_{\theta_j,\epsilon_j}\rVert^2}{\gamma_j}\,\mathbf 1_{G_j} \;\le\; \frac{k\,\check\varepsilon_d^{\,2}}{\delta}\ \Big\}.
+\]
+For $\mathcal E_1$: $d\lVert\theta_j\rVert^2 \sim \chi^2_d$, and the Laurent--Massart bounds give $\mathbb P(G_j^c) \le 2e^{-9d/64}$, whence $\mathbb P(\mathcal E_1^c) \le 2ke^{-9d/64}$ by a union bound. For $\mathcal E_2$: $\mathbb P(\mathcal E_2^c) = \eta_{k,d}$ by definition, and $\eta_{k,d} \to 0$ by Lemma~\ref{lem:tensor} and Assumption~\ref{ass:budget}; $R$ depends on $\Theta$ only through the directions $\hat\theta_j$, so the offsets do not enter. For $\mathcal E_3$: the pairs $(\theta_j,\epsilon_j)$ are i.i.d., so the mean of the truncated statistic is $k\check\varepsilon_d^{\,2}$ exactly, and Markov gives $\mathbb P(\mathcal E_3^c) \le \delta$. Hence $\mathbb P(\mathcal E_1\cap\mathcal E_2\cap\mathcal E_3) \ge 1 - \delta - 2ke^{-9d/64} - \eta_{k,d}$.
+
+On $\mathcal E_1$ every indicator equals one, so the truncated statistic coincides with $\sum_j \lVert\Delta_j\rVert^2/\gamma_j$, and Theorem~\ref{thm:master} gives
+\[
+\mathcal L^{\mathrm{RF}}_\sigma \;\ge\; \mathcal L^{\mathrm{lin}}_\sigma - \frac{\op{\Sig}^{2}}{1/2}\cdot\frac{k\check\varepsilon_d^{\,2}}{\delta}
+\;=\; \mathcal L^{\mathrm{lin}}_\sigma - 2\op{\Sig}^{2}\cdot\frac{k\check\varepsilon_d^{\,2}}{\delta}.
+\]
+The indicator in the definition of $\check\varepsilon_d$ is what licenses the use of the modulus in Lemma~\ref{lem:ratio}: the envelope of Assumption~\ref{ass:act} is stated only for $s \in [\tfrac\sigma2, 2\sigma]$, and $1/\gamma$ may genuinely diverge as $\lVert\theta\rVert \to 0$ (the band energy scales like $s^{2n_0}$ there), so the good-norm restriction is not removable. The conversion to $\hat\varepsilon_d$ is Lemma~\ref{lem:ratio}.
+
+\end{proof}
+
+\begin{remark}[Reading the constants]\label{rem:constants}
+Every quantity in Theorem~\ref{thm:master} is computable from $(\Theta, \epsilon, p_0, \omega, \sigma)$ with no hidden dependence: $\op{\Sig}$ is the top eigenvalue of the prior covariance (it enters squared because it bounds the residual covariance $\Cov(r) \preceq \Sig$ \emph{and} the signal coupling $\Cov(r,x_0)$ in Lemma~\ref{lem:calc}(d)); $\rho_*\gamma_j$ is the $j$-th diagonal entry of the ridge floor of Lemma~\ref{lem:agg}, i.e.\ feature $j$'s own share of the Mehler noise in the band $[n_0,N]$; and $\lVert\Delta_{\theta_j,\epsilon_j}\rVert^2$ is its realized Stein defect. The passage from Theorem~\ref{thm:master} to Theorem~\ref{thm:prob} trades exactly two of these for tail bounds --- $\rho_* \ge \tfrac12$ (Lemma~\ref{lem:tensor}) and $\sum_j \lVert\Delta_j\rVert^2/\gamma_j \le k\check\varepsilon_d^{\,2}/\delta$ (Markov) --- so the factor $2$ and the $1/\delta$ are the entire price of going from deterministic to high-probability. Note that Theorem~\ref{thm:master} refers to the parameter law nowhere: it holds for arbitrary fixed $(\Theta,\epsilon)$, so a different bias distribution changes only the two tail estimates. This is what makes the per-feature form worth the extra notation: in the earlier form, with a single floor $\min_j\gamma_j$, an unbounded offset law forces a truncation at $\tau_k \asymp \sigma_\epsilon\sqrt{\log k}$ and costs a factor $k^{\Theta(\sigma_\epsilon^2/\sigma^2)}$ --- a genuine polynomial loss that bounding $\sigma_\epsilon$ alone does not remove, since the exponent is a constant but the factor is not (Remark~\ref{rem:bias-cost}).
+\end{remark}
+
+\section{Corollaries and remarks}\label{sec:corollaries}
+
+Instantiating Lemma~\ref{lem:defect} for concrete priors turns Theorem~\ref{thm:prob} into a table of thresholds.
+
+\begin{corollary}[Threshold table]\label{cor:table}
+Under Assumptions~\ref{ass:data},~\ref{ass:act} and Lemma~\ref{lem:defect}, the linear-in-disguise range $k \ll k_* = \min(d/\hat\varepsilon_d^{\,2}, d^{\,n_0-o(1)})$ instantiates as: (i) i.i.d.-type coordinates with bounded skewness, $\Fro{\kappa_3}^2 \asymp d$: $\hat\varepsilon_d^{\,2} \lesssim 1/d$ and $k_* \gtrsim d^2$; (ii) symmetric i.i.d.-type coordinates, $\Fro{\kappa_4}^2 \asymp d$: $\hat\varepsilon_d^{\,2} \lesssim 1/d^2$ and $k_* \gtrsim d^{3}$ (requiring a floor at the third Mehler order once $k \gtrsim d^2$, supplied by Propositions~\ref{prop:a2}--\ref{prop:a2b} in the cases where those apply); (iii) formally, a spiked third cumulant $\kappa_3 = \lambda v^{\otimes 3}$ gives $\hat\varepsilon_d^{\,2} \lesssim \lambda^2/d^2$ and $k_* \gtrsim d^3/\lambda^2$, so a strong spike $\lambda \asymp d$ is \emph{consistent with} destroying linearity-in-disguise already at proportional width --- the failure mode of \cite{Pesce23}; (iv) sparse coordinates $x_{0,a} = b_a g_a$, $b_a \sim \mathrm{Bern}(p)$, give $\kappa_{4,a} \asymp 1/p$, hence formally $k_* \gtrsim p^2 d^3$. All entries are \emph{one-sided}: Lemma~\ref{lem:defect} bounds the defect from above only, so the table gives lower bounds on the linear-in-disguise range, i.e.\ guarantees. That $k_*$ is not larger --- equivalently, matching lower bounds on $\hat\varepsilon_d$ and a strict improvement above $k_*$ --- is the unproved converse of the sharpness remark below; without it, $\asymp$ would be an overclaim.
+\end{corollary}
+
+\begin{remark}[Honest caveats on the table]
+Row (iii) is not a product measure; Assumption~\ref{ass:stein} for it follows from a direct one-dimensional computation along $v$ (the defect concentrates on the spike direction), which is a short standalone calculation not included here. Row (iv) \emph{is} a product measure, but as $p \to 0$ the sub-Gaussian constant degrades like $p^{-1/2}$, so the constants in Lemma~\ref{lem:defect} acquire $p$-dependence; the stated rate tracks the cumulant factor only, and a sharp treatment should redo the moment bookkeeping of Lemma~\ref{lem:defect} with explicit $p$-dependence. Row (ii) beyond $k \gtrsim d^2$ additionally requires the reclassification of the degree-2 conditional-mean chaos: when $\kappa_3 = 0$, its covariance with $x_0$ vanishes, so it belongs to the signal-orthogonal block $H$ (harmless), while the ridge floor must be run at band $n_0 = 3$ via Lemma~\ref{lem:agg}. Both extensions use only the lemmas above, rearranged.
+\end{remark}
+
+\begin{remark}[Sharpness]
+The converse --- strict improvement over the linear denoiser for $k \gtrsim k_*$ when the relevant cumulant is nonzero --- is not proved here. For the spiked row a single planted feature $\theta \propto v$ plus the block-regression identity of Lemma~\ref{lem:calc}(d) run as an equality yields it by finite computation; for the i.i.d.\ rows it follows from the polynomial-regime random-features literature ($k \asymp d^\ell$ learns degree-$\ell$ structure, \cite{MMM21,Ghorbani}).
+\end{remark}
+
+\begin{remark}[Matching upper direction]
+For $k/d \to \infty$ within the linear-in-disguise range, the companion deterministic-equivalent computation gives $\mathcal L^{\mathrm{RF}}_\sigma/d \to \mathcal L^{\mathrm{lin}}_\sigma/d$ from above (effective noise $\eta = \lambda(1+\delta)/\psi \to 0$), so Theorem~\ref{thm:prob} upgrades to equality of normalized losses: the original Proposition~1 statement, now with hypotheses on $p_0$ rather than on the Mehler tail.
+\end{remark}
+
+\section{Why the hypotheses are not the conclusion}\label{sec:noncirc}
+
+Two hypotheses of Part~II do a great deal of work, and it is worth checking that neither smuggles in the conclusion.
+
+\begin{remark}[Three senses of ``Gaussian equivalence'']\label{rem:three-senses}
+The phrase is used in at least three ways in this literature, and the proof treats them differently.
+\begin{enumerate}
+\item[(i)] \emph{Equivalence of the features} --- replacing $\phi$ by a Gaussian vector with matched first two moments. This is used, in Lemma~\ref{lem:calc}(d), and it is an \emph{exact identity} rather than an approximation: by Lemmas~\ref{lem:decomp} and~\ref{lem:calc}(a), $\mathcal L^{\mathrm{RF}}_\sigma$ is a functional of $\big(\Cov(x_0,\phi), \Sigma_\phi\big)$ and of nothing else, because the readout is affine and the loss is squared. This is why the Gaussian-equivalence machinery of \cite{HuLu22,MS22} --- which exists because ERM test error under general losses is \emph{not} a second-moment functional and universality must be earned --- is absent here. For a linear readout under squared loss it is free, and the Gaussian surrogate is deployed purely as a device for invoking the Gram--Schmidt regression identity.
+\item[(ii)] \emph{Equivalence of the prior} --- $p_0$ behaving like a Gaussian along random one-dimensional projections. This is exactly the regime $\varepsilon_d \to 0$ of Assumption~\ref{ass:stein}, with $\varepsilon_d = 0$ the Gaussian case of Corollary~\ref{cor:gauss}. Theorem~\ref{thm:prob} is the quantitative interpolation between the two.
+\item[(iii)] \emph{The mechanism} ``Gaussian equivalence $\Rightarrow$ linearity'' --- the surrogate $\phi_j \approx \mu_0 + \mu_1\theta_j^\top y + \mu_*\zeta_j$ is affine in $y$ plus independent noise, so an affine readout of it is a noise-degraded affine readout of $y$. This is \emph{proved}, not assumed, and its exact form is Lemma~\ref{lem:schur}: $N^{(1)} - \sigma^2\bar B^\top\bar B = \sigma^2(\Theta\Theta^\top)\circ\Cov(\alpha) \succeq 0$. Where the usual treatment obtains this as an asymptotic moment-matching statement, here it is a finite-$k$, finite-$d$ PSD inequality with no error term --- which is precisely why it survives the perturbation $B = \bar B + \Delta$ in Section~\ref{sec:master}.
+\end{enumerate}
+\end{remark}
+
+\begin{remark}[Assumption~\ref{ass:stein} is not the conclusion in disguise]\label{rem:noncirc}
+Assumption~\ref{ass:stein} constrains the one-dimensional marginals of $p_0$ alone: neither $k$, nor $\omega$, nor the denoiser appears in its statement. The conclusion concerns a $k$-dimensional nonlinear regression, and Lemmas~\ref{lem:mehler},~\ref{lem:schur},~\ref{lem:agg},~\ref{lem:tensor} are what bridge the gap. The decisive check is that the assumption does \emph{not} imply the conclusion. Take a symmetric product prior with bounded coordinate kurtosis, so $\varepsilon_d^2 \asymp d^{-2}$ by Lemma~\ref{lem:defect} and Assumption~\ref{ass:stein} holds comfortably. For $k \ll d^{3}$ Theorem~\ref{thm:prob} gives linearity-in-disguise; for $k \gg d^{3}$ the RF model resolves the degree-3 structure of the prior and is expected to beat the linear denoiser strictly (this is the converse direction, not proved here --- see the sharpness remark and \cite{MMM21,Ghorbani}). Same $\varepsilon_d$, opposite conclusions, with only $k$ moved across the threshold. Small Stein defect is therefore necessary but far from sufficient, and the threshold $k_*$ is a genuine phenomenon rather than an artifact of the hypothesis.
+\end{remark}
+
+\begin{remark}[Completeness of Assumption~\ref{ass:act}]\label{rem:a2-complete}
+The non-degeneracy clause can fail only in a case where the conclusion is immediate. Suppose $\E_{x_0}[c_n(u,s)^2] = 0$ for every $n \ge 2$ at some admissible $(\theta,\epsilon,s)$. By Lemma~\ref{lem:c1} this forces $\psi_s^{(n)}(M_0) = 0$ for all $n \ge 2$ at any point $M_0$ in the support of $u$; since $\psi_s$ is entire (Lemma~\ref{lem:dichotomy}(a)), its Taylor series at $M_0$ is affine, hence $\psi_s$ is affine on all of $\R$, and Lemma~\ref{lem:dichotomy}(b) gives $\deg\omega \le 1$. But then $\phi$ is an affine function of $y$ and $\mathcal L^{\mathrm{RF}}_\sigma \ge \mathcal L^{\mathrm{lin}}_\sigma$ holds trivially with zero error. Assumption~\ref{ass:act} thus closes the hypothesis space rather than carving out a gap. Assumption~\ref{ass:budget}, by contrast, is a genuine boundary: past $k \asymp d^{\,n_0}$ the ridge floor of Lemma~\ref{lem:agg} is actually gone, and the conclusion is actually false.
+\end{remark}
+
+\section{Verification of the activation hypothesis, and the polynomial cap}\label{sec:activation}
+
+This section is devoted to Assumption~\ref{ass:act} and the rate it must supply for Assumption~\ref{ass:bias}. The results are of independent interest for the choice of activation, and they are what make the theorem usable rather than merely conditional.
+
+Throughout this section $\omega$ obeys \eqref{eq:envelope}. Write $P_t$ for the heat semigroup, $(P_tf)(M) := \E_\xi[f(M + \sqrt t\,\xi)]$, so that $\psi_s = P_{s^2}\omega$ and, by Lemma~\ref{lem:c1}, $c_n(M,s) = (s^n/n!)\,\psi_s^{(n)}(M)$. Nothing here uses smoothness, continuity, or boundedness of $\omega$.
+
+\begin{lemma}[Analyticity and the heat-semigroup dichotomy]\label{lem:dichotomy}
+Fix $s > 0$.
+\begin{enumerate}
+\item[(a)] $\psi_s$ extends to an entire function of $M \in \mathbb C$.
+\item[(b)] For every $n \ge 1$: $\ \psi_s^{(n)} \equiv 0$ on $\R$ $\iff$ $\omega$ agrees Lebesgue-a.e.\ with a polynomial of degree $\le n-1$.
+\end{enumerate}
+\end{lemma}
+
+\begin{proof}
+(a) For $M = M_1 + iM_2$, $\big|e^{-(M-t)^2/2s^2}\big| = e^{-((M_1-t)^2 - M_2^2)/2s^2}$, which against $|\omega(t)| \le Le^{a|t|}$ is integrable, locally uniformly in $M$. Fubini and Morera give holomorphy of $M \mapsto \int\omega(t)\varphi_s(M-t)dt$ on all of $\mathbb C$.
+
+(b) ($\Leftarrow$) In the monomial basis $P_t M^j = M^j + \text{(lower order)}$, so $P_t$ maps polynomials of degree $p$ to polynomials of degree $p$; thus $\psi_s = P_{s^2}\omega$ has degree $\le n-1$ and $\psi_s^{(n)} \equiv 0$.
+
+($\Rightarrow$) Suppose $\psi_s^{(n)} \equiv 0$, so $\psi_s$ is a polynomial of degree $m \le n-1$. Two ingredients.
+
+\emph{Injectivity of $P_r$ on exponentially bounded functions.} Let $|f| \le Ce^{a|u|}$ with $P_rf \equiv 0$. Writing $e^{-(M-t)^2/2r} = e^{-M^2/2r}e^{Mt/r}e^{-t^2/2r}$, the hypothesis says that the bilateral Laplace transform of $g(t) := f(t)e^{-t^2/2r}$ vanishes at every real argument $M/r$. Since $g$ has Gaussian decay, its bilateral Laplace transform is entire; vanishing on $\R$ forces it to vanish identically, so $g = 0$ a.e.\ by uniqueness of the Fourier transform, i.e.\ $f = 0$ a.e.
+
+\emph{Backward evolution of a polynomial.} By the triangularity above, $P_r$ restricted to polynomials of degree $\le m$ is unipotent, hence invertible, with inverse whose matrix entries are polynomials in $r$. For $0 < t < s^2$ let $Q_t := (P_{s^2-t})^{-1}\psi_s$, a polynomial of degree $\le m$ whose coefficients depend polynomially on $t$. Then $P_{s^2-t}\big(P_t\omega - Q_t\big) = \psi_s - \psi_s = 0$, and $|P_t\omega - Q_t| \le C_te^{a|\cdot|}$ by \eqref{eq:envelope}, so $P_t\omega = Q_t$ a.e.\ by injectivity. Letting $t \downarrow 0$: $P_t\omega \to \omega$ in $L^1_{\mathrm{loc}}$ (standard mollification) while $Q_t \to Q_0$ coefficientwise. Hence $\omega = Q_0$ a.e., a polynomial of degree $\le m \le n-1$.
+\end{proof}
+
+\begin{corollary}[Pointwise positivity of the Mehler tail energy]\label{cor:tail}
+For $n_0 \ge 1$ define the \emph{tail energy}
+\[
+T_{n_0}(M,s) \;:=\; \sum_{n \ge n_0} n!\,c_n(M,s)^2 \;=\; \E_\xi\big[\omega(M+s\xi)^2\big] \;-\; \sum_{n < n_0} n!\,c_n(M,s)^2 .
+\]
+If $\omega$ is not a.e.\ equal to a polynomial of degree $< n_0$, then $T_{n_0}(M,s) > 0$ for \emph{every} $M \in \R$ and every $s > 0$. For $n_0 = 2$,
+\[
+T_2(M,s) = \Var_\xi\big(\omega(M+s\xi)\big) - s^2\,\psi_s'(M)^2 \;>\; 0 \quad\text{unless } \omega \text{ is affine.}
+\]
+\end{corollary}
+
+\begin{proof}
+$T_{n_0}(M,s) = 0$ forces $c_n(M,s) = 0$, i.e.\ $\psi_s^{(n)}(M) = 0$, for all $n \ge n_0$. By Lemma~\ref{lem:dichotomy}(a) $\psi_s$ is entire, so its Taylor series at the single point $M$ is a polynomial of degree $< n_0$ and $\psi_s$ equals that polynomial on all of $\R$; then $\psi_s^{(n_0)} \equiv 0$ and Lemma~\ref{lem:dichotomy}(b) gives $\deg\omega < n_0$. The $n_0 = 2$ display is Parseval, $\sum_{n\ge0}n!c_n^2 = \E_\xi[\omega(M+s\xi)^2]$, minus the $n = 0,1$ terms $\psi_s(M)^2$ and $s^2\psi_s'(M)^2$.
+\end{proof}
+
+\noindent The point of Corollary~\ref{cor:tail} is that it has \emph{no} exceptional set: the tail energy is positive at every point, whereas an individual coefficient $c_n(\cdot,s)$ may well vanish somewhere. To exploit that, the ridge floor must be taken across a band of Mehler orders rather than at a single one.
+
+\begin{proposition}[Assumption~\ref{ass:act} is automatic for non-polynomial activations]\label{prop:a2}
+Suppose $\omega$ obeys \eqref{eq:envelope} and is not a.e.\ equal to a polynomial. Then for every $n_0 \ge 2$ and every \emph{finite} $R$ there is a finite $N = N(n_0, R, \sigma, \omega)$ such that
+\[
+\min\big\{\,T^{(N)}_{n_0}(M,s)\ :\ |M|\le R,\ s\in[\tfrac\sigma2,2\sigma]\,\big\} \;>\; 0 .
+\]
+The quantifier order matters and is the weaker one: this is $\forall R\,\exists N(R)$, \emph{not} $\exists N\,\forall R$ --- Dini's theorem is applied on one compact box at a time, and $N(R)$ may grow with $R$. Consequently:
+\begin{enumerate}
+\item[(a)] If the offset law has compact support, then the compact-offset variant Assumption~\ref{ass:actprime} --- which is what Lemma~\ref{lem:ratio} actually consumes in that case, the modulus being evaluated only on a compact range --- holds \emph{automatically} for every non-polynomial $\omega$, with the fixed band $N = N(R_0)$. Assumption~\ref{ass:act} as literally stated (one band, all $R$) is \emph{not} established by this; it is simply not needed there. Since $n_0$ is arbitrary, Assumption~\ref{ass:budget} imposes no constraint.
+\item[(b)] For unbounded (e.g.\ Gaussian) offsets, Assumption~\ref{ass:act} --- a single finite band positive on all of $\R$ --- is a \emph{genuine hypothesis}, not automatic: a finite band $\sum_{n=n_0}^N n!c_n^2$ is a finite family of real-analytic functions and may share a common zero for contrived $\omega$; only the infinite tail energy is zero-free (Corollary~\ref{cor:tail}). It is verified for finitely-kinked piecewise-linear activations in Proposition~\ref{prop:a2b}; Remark~\ref{rem:threekink} shows that even there, a naive two-order band fails.
+\end{enumerate}
+No decay rate for the compact minima is claimed at this generality.
+\end{proposition}
+
+\begin{proof}
+Write $T_{n_0}(M,s) := \sum_{n\ge n_0} n!c_n(M,s)^2$, continuous on $\R\times(0,\infty)$ (dominated convergence using \eqref{eq:envelope}) and, by Corollary~\ref{cor:tail}, strictly positive at every point since $\omega$ is not a polynomial of degree $< n_0$. Fix $R$. The partial sums $T^{(N)}_{n_0}$ are continuous and increase pointwise to the continuous limit, so Dini's theorem gives uniform convergence on the compact box $B_R := [-R,R]\times[\tfrac\sigma2,2\sigma]$; with $\mu_R := \min_{B_R} T_{n_0} > 0$ (a minimum of a positive continuous function on a compact set), choose $N(R)$ with $T^{(N(R))}_{n_0} \ge \tfrac12\mu_R$ on $B_R$. Nothing in this argument produces an $R$-independent $N$, and the claim stops here.
+\end{proof}
+
+\begin{proposition}[Gaussian modulus rate for piecewise-linear activations]\label{prop:a2b}
+Suppose $\omega$ is piecewise linear with finitely many kinks: $\omega'' = \sum_{i=1}^{K} a_i\delta_{t_i}$ distributionally, $a_i \ne 0$, $t_1 < \dots < t_K$, $K \ge 1$. Fix $n_0 \ge 2$. Then there exist a finite band $[n_0, N]$ --- with $N = \max\big(n_0+1,\ N(R_1)\big)$, where $N(R_1)$ is supplied by Proposition~\ref{prop:a2} on a compact $[-R_1, R_1]$ determined below, and $N = n_0 + 1$ suffices when $K = 1$ --- and a constant $\kappa > 0$ such that
+\[
+m(R) \;\ge\; \kappa\, e^{-R^2/s_-^2\,(1 + o_R(1))}, \qquad s_- := \tfrac\sigma2 ,
+\]
+Consequently, for \emph{every} $b > 1/s_-^2$ there is $\kappa_b > 0$ with the exact-exponent form
+\[
+m(R) \;\ge\; \kappa_b\, e^{-bR^2} \qquad \text{for all } R \ge 0
+\]
+(the $o_R(1)$ is absorbed for $R$ large, and the compact part contributes only to $\kappa_b$). Since the condition $\sigma_\epsilon < s_-/4 = \sigma/8$ is \emph{strict}, one may choose $b \in \big(1/s_-^2,\ 1/(16\sigma_\epsilon^2)\big)$, a nonempty interval, and Assumption~\ref{ass:bias} holds exactly as stated, with the conclusion unchanged.
+
+The exponent is $R^2/s_-^2$, \textbf{not} $R^2/(2s_-^2)$: the modulus is a \emph{squared} density. The calibrating single-kink example is ReLU, $\omega(t) = t_+$, $n_0 = 2$, where everything is exact: $c_2(M,s) = \tfrac{s}{2}\varphi(M/s)$, $c_3(M,s) = -\tfrac{M}{6}\varphi(M/s)$, so
+\[
+2!\,c_2^2 + 3!\,c_3^2 \;=\; \Big(\frac{s^2}{4\pi} + \frac{M^2}{12\pi}\Big)\,e^{-M^2/s^2},
+\qquad
+m(R) \asymp R^2 e^{-R^2/s_-^2}.
+\]
+\end{proposition}
+
+\begin{proof}
+By Remark~\ref{rem:scope-act}, $\psi_s^{(n)}(M) = \sum_i a_i\varphi_s^{(n-2)}(M - t_i)$ for $n \ge 2$, with $\varphi_s^{(r)}(u) = (-1)^r s^{-r}\He_r(u/s)\varphi_s(u)$.
+
+\emph{Tails: two orders suffice, bounded jointly.} Consider $M \to +\infty$ (the left tail is symmetric). A per-order lower bound of the form $|\psi_s^{(n)}(M)| \gtrsim |\He_{n-2}(\frac{M-t_K}{s})|\varphi_s(M-t_K)$ is \emph{false} near the (rescaled, $M$-traversing) zeros of $\He_{n-2}$, where the subdominant kinks control the sign and size of $\psi_s^{(n)}$; the two orders must be bounded \emph{as a vector}. Set
+\[
+v(M,s) := \begin{pmatrix}\psi_s^{(n_0)}(M)\\[2pt] \psi_s^{(n_0+1)}(M)\end{pmatrix}
+= a_K\, v^\star(M,s) \;+\; r(M,s),
+\qquad
+v^\star := \begin{pmatrix}\varphi_s^{(n_0-2)}(M - t_K)\\[2pt] \varphi_s^{(n_0-1)}(M - t_K)\end{pmatrix},
+\]
+where $r$ collects the kinks $i < K$. \emph{Dominant vector has uniform relative norm:} with $x := (M-t_K)/s$ and $\varphi_s^{(m)}(u) = (-1)^m s^{-m}\He_m(u/s)\varphi_s(u)$,
+\[
+\lVert v^\star\rVert^2 \;=\; \varphi_s(M-t_K)^2\Big[s^{-2(n_0-2)}\He_{n_0-2}(x)^2 + s^{-2(n_0-1)}\He_{n_0-1}(x)^2\Big]
+\;\ge\; c_{n_0}(\sigma)\,\varphi_s(M-t_K)^2 ,
+\]
+with $c_{n_0}(\sigma) > 0$, because consecutive Hermite polynomials have strictly interlacing zeros, hence no common real zero, so $\He_{n_0-2}(x)^2 + \He_{n_0-1}(x)^2 \ge c_{n_0} > 0$ uniformly over $x \in \R$ (the polynomial pair even grows like $(1+x^2)^{n_0-2}$, but the constant suffices), and $s \in [\tfrac\sigma2, 2\sigma]$ keeps the $s$-powers bounded. \emph{Remainder is exponentially smaller:} for $i < K$,
+\[
+\frac{\varphi_s(M - t_i)}{\varphi_s(M - t_K)} \;=\; \exp\!\Big(-\frac{(t_K - t_i)\,(2M - t_i - t_K)}{2s^2}\Big) \;\le\; e^{-c\,(M - t_K)},
+\qquad c = \frac{t_K - t_{K-1}}{(2\sigma)^2} > 0,
+\]
+uniformly over $s \le 2\sigma$, and the Hermite prefactors are polynomial, so $\lVert r(M,s)\rVert \le C\,e^{-\frac c2(M - t_K)}\,\varphi_s(M-t_K)$ for $M$ large. Hence there is $R_1$ (depending on the kink gaps, the $a_i$, and $\sigma$) with, for all $M \ge R_1$ and $s \in [\tfrac\sigma2, 2\sigma]$,
+\[
+\lVert v(M,s)\rVert \;\ge\; |a_K|\,\lVert v^\star\rVert - \lVert r\rVert \;\ge\; \tfrac12\,|a_K|\,\sqrt{c_{n_0}(\sigma)}\ \varphi_s(M - t_K) .
+\]
+This is a bound on the \emph{norm} of the pair, valid across the Hermite zeros where either single component may vanish. The band energy then obeys
+\[
+T^{(n_0+1)}_{n_0}(M,s) \;=\; \frac{s^{2n_0}}{n_0!}\,\psi_s^{(n_0)}(M)^2 + \frac{s^{2(n_0+1)}}{(n_0+1)!}\,\psi_s^{(n_0+1)}(M)^2
+\;\ge\; w(\sigma)\,\lVert v(M,s)\rVert^2 ,
+\]
+with $w(\sigma) := \min\big(s_-^{2n_0}/n_0!,\ s_-^{2(n_0+1)}/(n_0{+}1)!\big) > 0$, and $\varphi_s(M-t_K)^2 = e^{-(M-t_K)^2/s^2}/(2\pi s^2)$, minimized over $s \in [\tfrac\sigma2, 2\sigma]$ at fixed large $M$, gives the rate $e^{-(M-t_K)^2/s_-^2}$, with shifts and constant prefactors absorbed into $o_R(1)$.
+
+\emph{Interior: two orders do \textbf{not} suffice; Proposition~\ref{prop:a2} does.} On $[-R_1, R_1]$, apply Proposition~\ref{prop:a2} at $R_1$ ($\omega$ has a kink, hence is non-polynomial) to obtain $N(R_1)$ and a strictly positive minimum of $T^{(N(R_1))}_{n_0}$ on the compact box. Enlarging the band to $N = \max(n_0+1, N(R_1))$ only adds nonnegative terms, so the single fixed band $[n_0, N]$ covers both regimes, with $\kappa$ the smaller of the two regime constants (the interior constant rescaled by $e^{-R_1^2/s_-^2}$ so as to fit under the stated envelope). When $K = 1$ the interior step is unnecessary: the tail display holds for \emph{all} $M$, there being no competing centers, exactly as the ReLU formulas show, and $N = n_0 + 1$.
+\end{proof}
+
+\begin{remark}[Two orders genuinely fail for $K \ge 3$: a counterexample]\label{rem:threekink}
+The interior enlargement is not an artifact of the proof. Fix $s_0 \in [\tfrac\sigma2, 2\sigma]$, $h > 0$, $q := e^{-h^2/2s_0^2}$, and take
+\[
+\omega(t) \;=\; (t+h)_+ \;-\; 2q\,t_+ \;+\; (t-h)_+ ,
+\qquad
+\omega'' = \delta_{-h} - 2q\,\delta_0 + \delta_h .
+\]
+Then at $M = 0$, $s = s_0$:
+\[
+\psi_{s_0}''(0) = 2\varphi_{s_0}(h) - 2q\,\varphi_{s_0}(0) = 2\varphi_{s_0}(0)\big[e^{-h^2/2s_0^2} - q\big] = 0,
+\qquad
+\psi_{s_0}'''(0) = \varphi_{s_0}'(h) + \varphi_{s_0}'(-h) - 2q\,\varphi_{s_0}'(0) = 0
+\]
+(the second by oddness of $\varphi_{s_0}'$). Hence $c_2(0,s_0) = c_3(0,s_0) = 0$: three kinks can conspire at an interior point, and the two-order modulus at $n_0 = 2$ vanishes. The next order rescues this particular point --- $\psi^{(4)}_{s_0}(0) = 2q\,\varphi_{s_0}(0)\,h^2/s_0^4 \ne 0$ --- but which order rescues which point is not controlled by any two-member band, and only the Dini enlargement of Proposition~\ref{prop:a2} handles the compact interior uniformly. This example, and the correction it forces, are due to the review of an earlier draft, which had asserted that $\{n_0, n_0+1\}$ suffices for the whole kink class on the strength of the single-kink ReLU computation --- an invalid inference from $K = 1$ to general $K$.
+\end{remark}
+
+\begin{remark}[On an absolutely continuous part of $\omega''$]\label{rem:acpart}
+The proposition deliberately excludes $\omega'' = \sum_i a_i\delta_{t_i} + \mu_{\mathrm{ac}}$ with $\mu_{\mathrm{ac}} \ne 0$; an earlier draft claimed the kink terms dominate $\mu_{\mathrm{ac}}$ in the tails ``by the same mechanism,'' which is false in general. For $M \to +\infty$ the ac contribution is a Laplace-type integral concentrated at the \emph{right edge} $T_+ := \sup\operatorname{supp}\mu_{\mathrm{ac}}$, of size of order $e^{-(M-T_+)^2/2s^2}/(M-T_+)$ times bounded factors. If $T_+ > t_K$ --- the ac support extends beyond the outermost kink --- this term \emph{dominates} the kink terms, and since the density near the edge may oscillate in sign, no tail lower bound follows without further hypotheses. If instead the kinks flank the ac support, $t_1 \le \inf\operatorname{supp}\mu_{\mathrm{ac}}$ and $T_+ \le t_K$, the kink at the relevant edge wins by the extra factor $(M-t_K)^{-1}$ from the Laplace integral, and the proposition extends with the same rate; sign-definiteness of the ac density near its edges is an alternative sufficient condition. We record the flanking extension without detailed proof and make no claim beyond it.
+\end{remark}
+
+\begin{remark}[The gap this replaces]\label{rem:no-rate}
+An earlier draft claimed the Gaussian rate for \emph{every} non-polynomial $\omega$, by arguing that in $\psi_s^{(n_0)}(M) \propto e^{-M^2/2s^2}\int\omega(t)e^{-t^2/2s^2}\He_{n_0}(\tfrac{M-t}{s})e^{Mt/s^2}dt$ the contribution of a fixed interval dominates. That argument is wrong as stated: nothing prevents cancellation --- the bilateral Laplace transform of $\omega(t)e^{-t^2/2s^2}$ is entire and, for oscillating $\omega$, may have real zeros along a sequence $M \to \infty$, and the finite band need not repair this. Per-$R$ positivity with an $R$-dependent band (Proposition~\ref{prop:a2}) is automatic; a \emph{fixed} band positive on all of $\R$, and a fortiori a rate for its modulus, are additional activation-specific properties --- established above for finitely-kinked piecewise-linear activations and to be verified per activation otherwise. This is precisely why Assumption~\ref{ass:bias} is stated through the modulus $\Xi$ rather than through a universal exponent.
+\end{remark}
+
+\begin{corollary}[The polynomial cap]\label{cor:polycap}
+If $\omega$ is a.e.\ a polynomial of degree $p$, then by Lemma~\ref{lem:dichotomy}(b) $c_n \equiv 0$ for every $n > p$: no Mehler order above $p$ exists, so the band $[n_0,N]$ must lie in $[2,p]$, and Assumption~\ref{ass:budget} caps Theorem~\ref{thm:prob} at $k \lesssim d^{\,p}$. This cap is genuine, not an artifact. For $\deg\omega = p$ the features $\phi_j$ are degree-$p$ polynomials in $y$, so $\operatorname{span}\{\phi_j\}$ lies in a fixed space of dimension $\asymp d^{\,p}$; once $k \gtrsim d^{\,p}$ the model saturates that space, the tensor Gram matrices $R^{\circ n}$, $n \le p$, become rank-deficient, and the ridge floor is genuinely absent. Beyond the cap the RF denoiser \emph{is} the optimal degree-$p$ polynomial denoiser, and whether that beats the linear one is decided by the prior's cumulants directly --- a question this proof does not address.
+\end{corollary}
+
+\begin{remark}[Scope]\label{rem:scope-act}
+Lemma~\ref{lem:dichotomy} makes the trichotomy sharp: (i) $\omega$ affine --- the conclusion is trivial, since $\phi$ is then affine in $y$ (Remark~\ref{rem:a2-complete}); (ii) $\omega$ polynomial of degree $p \ge 2$ --- Theorem~\ref{thm:prob} holds up to the genuine cap $k \lesssim d^{\,p}$; (iii) $\omega$ non-polynomial --- every Mehler order is live; for compactly supported offsets (Assumption~\ref{ass:actprime}, automatic by Proposition~\ref{prop:a2}) or finitely-kinked piecewise-linear activations under Gaussian offsets with $\sigma_\epsilon < \sigma/8$ (Proposition~\ref{prop:a2b}) the floor is explicit and the threshold is set by the prior alone, $k_* = d/\hat\varepsilon_d^{\,2}$; for other activation/offset pairs, Assumptions~\ref{ass:act} and~\ref{ass:bias} are hypotheses to verify. Case (iii) covers every activation in standard use, including all the non-smooth ones: $\omega$ is never differentiated in this proof, only $\psi_s = \omega * \mathcal N(0,s^2)$ is, and that is entire for any $\omega$ obeying \eqref{eq:envelope}. Bounded activations satisfy \eqref{eq:envelope} with $a = 0$; piecewise-polynomial ones with a kink satisfy it with $a = 0$ up to the polynomial factor and are non-polynomial by inspection. For the latter, the distributional identity $\omega'' = \sum_j a_j\delta_{t_j} + \mu_{\mathrm{ac}}$ gives the explicit form
+\[
+\psi_s^{(n)}(M) \;=\; \sum_j a_j\,\varphi_s^{(n-2)}(M - t_j) \;+\; \big(\mu_{\mathrm{ac}} * \varphi_s\big)^{(n-2)}(M), \qquad n \ge 2,
+\]
+so the kink locations alone already populate every order through the Hermite functions $\varphi_s^{(n-2)}$, which is a convenient route to numerical values of $m$ in Proposition~\ref{prop:a2}. The only real exclusions are growth beyond \eqref{eq:envelope} --- Gaussian-type growth $|\omega(u)| \le Le^{bu^2/2}$ works provided $4b\sigma^2 < 1$, so that $\psi_s$ exists for $s \le 2\sigma$, with $e^{a|M|}$ replaced by $e^{b'M^2}$ throughout Lemmas~\ref{lem:c1} and~\ref{lem:defect} --- and $\sigma = 0$, where $\psi_0 = \omega$, the smoothing-based analyticity collapses, and the problem is no longer one of denoising.
+\end{remark}
+
+\section{The role and cost of the bias}\label{sec:bias}
+
+\begin{remark}[What the Gaussian bias costs]\label{rem:bias-cost}
+This remark records what the per-feature floor of Theorem~\ref{thm:master} buys, by describing what the cruder uniform-floor route would have cost. Suppose one insists on a single ridge floor $\min_j\gamma_j$ rather than the diagonal $D$. Then the offsets must be truncated at some level $\tau$, and the resulting constant $c_*(\tau) := \inf\{\gamma(\theta,\epsilon) : \lVert\theta\rVert\in[\tfrac12,2],\ |\epsilon|\le\tau\}$ genuinely degrades in $\tau$, and not as an artifact of Proposition~\ref{prop:a2}. A feature with a large offset is evaluated far out in the tail of its activation, where the Mehler coefficients are small: for any $\omega$ with $\psi_s$ of bounded variation on $\R$ one has $c_n(M,s) \to 0$ as $|M| \to \infty$, so no bound uniform over all offsets can exist. Quantitatively, $m(\tau)$ typically decays like $e^{-\tau^2/2s^2}$ for activations that saturate or grow at most polynomially (e.g.\ for a kink at $t_0$, the identity in Remark~\ref{rem:scope-act} gives $c_n(M,s) \asymp \varphi_s^{(n-2)}(M - t_0)$, Gaussian in $M$). A union bound over $k$ Gaussian offsets forces $\tau_k \asymp \sigma_\epsilon\sqrt{\log k}$, at which $c_*(\tau_k) \asymp k^{-2\sigma_\epsilon^2/s^2}$; the error term would then carry a factor $k^{2\sigma_\epsilon^2/s^2}$ and the threshold would degrade to $k_*^{1+2\sigma_\epsilon^2/\sigma^2} \asymp d/\hat\varepsilon_d^{\,2}$.
+
+It is worth being precise about what \emph{merely} bounding $\sigma_\epsilon$ does and does not fix here. Since $\sigma_\epsilon$ is a fixed constant of the model, the exponent $2\sigma_\epsilon^2/\sigma^2$ is a constant --- but $k^{\text{const}}$ is still a polynomial loss, and at $\sigma_\epsilon \asymp \sigma$ it consumes the entire gain of the theorem. Boundedness of $\sigma_\epsilon$ is therefore \emph{not} by itself the right hypothesis for the uniform-floor route; only $\sigma_\epsilon \to 0$ would be.
+
+The per-feature floor removes the issue at its source, and this is why Theorem~\ref{thm:master} is stated that way: the offsets are never truncated, and $\sigma_\epsilon$ enters only through the single integrability condition $\Xi < \infty$ of \eqref{eq:biasbound}, evaluated in Lemma~\ref{lem:ratio}. Bounded $\sigma_\epsilon$ then \emph{is} the right hypothesis, in the coupled form of Assumption~\ref{ass:bias}: when the modulus has Gaussian rate $m(R) \gtrsim e^{-bR^2}$, the condition $16b\sigma_\epsilon^2 < 1$ makes the cost an honest constant with no $k$-dependence whatever, and above the critical scale $\check\varepsilon_d^{\,2}$ can genuinely diverge, because offsets far in the tail sit where the activation has no Mehler energy left to serve as a ridge. Alternatively, a compactly supported offset law makes \eqref{eq:biasbound} automatic (the modulus is only ever evaluated on a compact) and needs no condition at all; the deterministic inequality of Theorem~\ref{thm:master} is indifferent to the choice.
+\end{remark}
+
+\begin{remark}[What the bias buys, and why it cannot be absorbed]\label{rem:bias-role}
+The offsets are not decorative. With $\epsilon \equiv 0$ and $\omega$ even, $\psi_s$ is even, so $\bar\alpha_j = \E_{x_0}[\psi_{s_j}'(\theta_j^\top x_0)] = 0$ whenever the projected marginal is symmetric; then $\bar B = 0$, Lemma~\ref{lem:schur} degenerates to the vacuous $N^{(1)} \succeq 0$, and the entire signal is carried by $\Delta$. The theorem remains true --- the burden shifts to the ridge floor --- but the bound becomes weak. A non-degenerate offset law breaks the parity: for $\epsilon_j \ne 0$, $\bar\alpha_j \ne 0$ generically, and since $\epsilon_j$ is a continuous random variable, this holds for a.e.\ draw.
+
+Two structural points. First, $\epsilon_j$ is a \emph{parameter}, drawn once alongside $\theta_j$ and then fixed, not resampled with each $(x_0,Z)$; it therefore cannot be absorbed into the Gaussian smoothing, even though $\epsilon_j$ is Gaussian. (Were it resampled per observation, one could merge it into $\xi_j$ and replace $s_j$ by $\sqrt{s_j^2 + \sigma_\epsilon^2}$ --- a different, and easier, model.) This is why the proof conditions on $(\Theta,\epsilon)$ throughout: part (i) is a statement for fixed parameters, and only the three tail estimates in part (ii) integrate over their law. Second, the familiar device of absorbing the bias by augmenting $x_0 \mapsto (x_0, 1)$ and $\theta_j \mapsto (\theta_j, \epsilon_j)$ is unavailable here, since the augmented prior has a deterministic coordinate and hence singular covariance, violating $\Sig \succ 0$ in Assumption~\ref{ass:data} --- an assumption used essentially, in the definition of the Stein defect itself.
+\end{remark}
+
+\begin{thebibliography}{9}
+\bibitem{MMM21} S.~Mei, T.~Misiakiewicz, A.~Montanari, \emph{Generalization error of random features and kernel methods: hypercontractivity and kernel matrix concentration}, Appl.\ Comput.\ Harmon.\ Anal.\ (2022).
+\bibitem{MZ22} A.~Montanari, Y.~Zhong, \emph{The interpolation phase transition in neural networks}, Ann.\ Statist.\ (2022).
+\bibitem{HuLu22} H.~Hu, Y.~M.~Lu, \emph{Universality laws for high-dimensional learning with random features}, IEEE Trans.\ Inf.\ Theory (2022).
+\bibitem{MS22} A.~Montanari, B.~Saeed, \emph{Universality of empirical risk minimization}, COLT (2022).
+\bibitem{Pesce23} L.~Pesce, F.~Krzakala, B.~Loureiro, L.~Stephan, \emph{Are Gaussian data all you need? The extents and limits of universality in high-dimensional generalized linear estimation}, ICML (2023).
+\bibitem{Ghorbani} B.~Ghorbani, S.~Mei, T.~Misiakiewicz, A.~Montanari, \emph{Linearized two-layers neural networks in high dimension}, Ann.\ Statist.\ (2021).
+\end{thebibliography}
+
+\end{document}
