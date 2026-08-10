@@ -247,6 +247,8 @@ and $\mathrm{EV}(x;\zeta_1) = \TT(P_1, C_1)$. For diagonal $C_2$ the trace is $\
 = \Tr\big(\Sig\,\Sy^{-1/2}\,\Pi_X\,\Sy^{-1/2}\Sig\big), \quad X := \Sy^{1/2}\bar B,
 \]
 using $X(X^\top X)^+X^\top = \Pi_{\operatorname{range}(X)} \preceq I$. The bound follows.
+
+\emph{When (e) is tight.} Since $\Sy^{1/2}$ is invertible, $\operatorname{range}(X) = \Sy^{1/2}\operatorname{range}(\bar B)$, so $\Pi_X = I$ --- i.e.\ (e) holds with equality --- precisely when $\operatorname{rank}(\bar B) = d$. This is the \emph{same} condition under which the block bound (d) simplifies (Remark~\ref{rem:covr}): there it makes the affine predictors available from $\zeta_1$ coincide with those available from $y$, here it makes the matched linear model saturate its own ceiling. Both are generic once $k \ge d$, and both fail together in the degenerate case $\bar\alpha_j \equiv 0$ of Remark~\ref{rem:bias-role} ($\bar B = 0$).
 \end{proof}
 
 \section{The deterministic master inequality}\label{sec:master}
@@ -290,9 +292,45 @@ Branch on $\Delta$ first. If $\Delta = 0$, no floor is needed: the chain below r
 \;\overset{(d)}{\le}\; \TT\big(\bar B,\, \sigma^2\bar B^\top\bar B\big) + \op{\Sig}^{2}\Tr\big(\Delta D^{-1}\Delta^\top\big)
 \;\overset{(e)}{\le}\; \Tr\big(\Sig\Sy^{-1}\Sig\big) + \frac{\op{\Sig}^{2}}{\rho_*}\sum_{j\le k}\frac{\lVert\Delta_{\theta_j,\epsilon_j}\rVert^2}{\gamma_j},
 \]
-where in (d) the constant is sharp because $\Cov(r) \preceq \Sig$ gives $\op{\Cov(r,x)} \le \op{\Sig}$. Lemma~\ref{lem:calc}(a) converts this to the boxed inequality of the theorem. Nothing here constrains $k$, $d$, or the offsets, and $p_0$ enters only through $\Sig \succ 0$ and the exponential-moment condition \eqref{eq:expmom}.
+where in (d) the constant is sharp because $\Cov(r) \preceq \Sig$ gives $\op{\Cov(r,x)} \le \op{\Sig}$. \emph{That last step is where the conditioning of $\Sig$ is discarded; Remark~\ref{rem:covr} records what is available if it is not taken.} Lemma~\ref{lem:calc}(a) converts this to the boxed inequality of the theorem. Nothing here constrains $k$, $d$, or the offsets, and $p_0$ enters only through $\Sig \succ 0$ and the exponential-moment condition \eqref{eq:expmom}.
 
 \end{proof}
+
+\begin{remark}[The $\Cov(r)$-weighted form: sharper, and free of $\Sig^{-1}$]\label{rem:covr}
+Step (d) of Lemma~\ref{lem:calc} passes through
+\[
+\mathrm{EV}(r;\tilde\zeta_2) \;\le\; \Tr\big(\Cov(r,x)\,P_2 C_2^{-1} P_2^\top\,\Cov(x,r)\big)
+\;\le\; \op{\Cov(r,x)}^2\,\Tr\big(P_2C_2^{-1}P_2^\top\big),
+\]
+and only the second inequality introduces $\op{\Sig}$. Retaining the first gives, in place of the boxed bound of Theorem~\ref{thm:master},
+\begin{equation}\label{eq:sharp-master}
+\mathcal L^{\mathrm{RF}}_\sigma \;\ge\; \mathcal L^{\mathrm{lin}}_\sigma \;-\; \frac{1}{\rho_*}\sum_{j\le k}\frac{\big\lVert \Cov(r)\,\Delta_{\theta_j,\epsilon_j}\big\rVert^2}{\gamma_j}.
+\end{equation}
+
+\emph{(i) $\Cov(r)$ is explicit and design-independent once $k \ge d$.} Since $\nu_1 \sim \mathcal N(0,\sigma^2\bar B^\top\bar B)$, $\zeta_1 \overset{d}{=} \bar B^\top(x+\sigma Z) = \bar B^\top y$. The predictors reachable from $\zeta_1$ are $V\zeta_1 + b = (V\bar B^\top)y + b$, and as $V$ ranges over $\R^{d\times k}$ the matrix $V\bar B^\top$ ranges over exactly those matrices whose row space lies in $\operatorname{range}(\bar B)$. Hence
+\[
+\operatorname{rank}(\bar B) = d
+\quad\Longleftrightarrow\quad
+\{\text{affine functions of }\zeta_1\} \;=\; \{\text{affine functions of }y\},
+\]
+in which case $\hat x$ is the Wiener filter and $\Cov(r) = \sigma^2\Sig\,\Sy^{-1}$. The statement is deliberately about affine \emph{classes} rather than $\sigma$-algebras: $\hat x$ in (d) is the best \emph{affine} predictor, so only the reachable linear span is relevant. For $k<d$ that span is a strict subset and $\Cov(r) \succeq \sigma^2\Sig\Sy^{-1}$, so the Wiener residual remains a valid surrogate. The rank condition is exactly the tightness condition for (e), and is generic once $k\ge d$ provided $\bar\alpha_j \ne 0$ --- which is what a non-degenerate offset law buys (Remark~\ref{rem:bias-role}).
+
+\emph{(ii) The weighting cancels $\Sig^{-1}$ exactly.} $\Sig$ and $\Sy = \Sig+\sigma^2 I$ commute, so $\Cov(r)\Sig^{-1} = \sigma^2\Sig\Sy^{-1}\Sig^{-1} = \sigma^2\Sy^{-1}$, whence
+\begin{equation}\label{eq:invfree}
+\Cov(r)\,\Delta_{\theta,\epsilon} \;=\; \sigma^{2}\,\Sy^{-1}\,\Delta^{\mathrm{raw}}_{\theta,\epsilon},
+\qquad
+\Delta^{\mathrm{raw}}_{\theta,\epsilon} \;:=\; \Cov\!\big(x_0,\ \psi_{s(\theta)}(\theta^\top x_0+\epsilon)\big) \;-\; \bar\alpha(\theta,\epsilon)\,\Sig\,\theta .
+\end{equation}
+No inverse of $\Sig$ survives. $\Delta^{\mathrm{raw}} = \Sig\Delta$ is the failure of Stein's identity in its native form --- for Gaussian $x_0$, $\Cov(x_0,f(\theta^\top x_0)) = \E[f']\,\Sig\theta$ exactly, so $\Delta^{\mathrm{raw}} \equiv 0$ --- and the only inversion left is $\Sy^{-1}$, which exists for every $\sigma>0$ since $\Sy \succeq \sigma^2 I$. Equivalently: the $\Sig^{-1}$ in Assumption~\ref{ass:stein} is an artifact of parametrising the signal block by $B$ rather than by $\Sig B = \Cov(x_0,\phi)$, which is what the loss actually sees.
+
+Assumption~\ref{ass:stein} may therefore be stated with no inversion at all,
+\[
+\E_{\theta \sim \mathcal N(0,I_d/d),\ \epsilon\sim\mathcal N(0,\sigma_\epsilon^2)}\ \big\lVert \Delta^{\mathrm{raw}}_{\theta,\epsilon}\big\rVert^2 \;\le\; \big(\varepsilon^{\mathrm{raw}}_d\big)^2 ,
+\]
+and since $\op{\Sy^{-1}} \le \sigma^{-2}$, \eqref{eq:invfree} gives $\lVert\Cov(r)\Delta\rVert \le \lVert\Delta^{\mathrm{raw}}\rVert$, so \eqref{eq:sharp-master} holds a fortiori with $\lVert\Delta^{\mathrm{raw}}_j\rVert^2$ in the numerator. In this form the defect never uses the lower bound $\underline c\,I \preceq \Sig$ of Assumption~\ref{ass:data}: a rank-deficient $\Sig$ is admissible, $B$ being non-unique while $\Sig B = \Cov(x_0,\phi)$ is unique. (Whether $\Sig \succ 0$ can be dropped from Theorem~\ref{thm:master} \emph{globally} requires auditing its remaining uses; only the defect is settled here.)
+
+\emph{(iii) Why this matters in practice.} $\Cov(r) = \sigma^2\Sig\Sy^{-1}$ has eigenvalues $\sigma^2\lambda/(\lambda+\sigma^2)$: these vanish with $\lambda$ on the near-null spectrum of $\Sig$ and \emph{saturate at $\sigma^2$} at the top, where the crude bound instead grows to $\op{\Sig}$. For a flat spectrum the two agree up to a constant, and on the Gaussian-mixture experiments (eigenvalues in $[0.42,3.66]$) the distinction is invisible. For natural images it is decisive. On CIFAR-10 pixels ($d=3072$, $\operatorname{cond}(\Sig)=3.6\times10^{7}$, $\op{\Sig}=55.4$) one measures $\op{\Sig}^2\,\E\lVert\Delta\rVert^2$ between $4\times10^{2}$ and $2.6\times10^{3}$, against $\E\lVert\Cov(r)\Delta\rVert^2 \approx 4\times10^{-7}$--$1.5\times10^{-6}$: a gap of $10^{8}$--$10^{9}$. The reason is visible in the spectrum --- decomposing $\Delta$ in the eigenbasis of $\Sig$, $98\%$ of $\lVert\Delta\rVert^2$ sits in directions carrying about $2\%$ of the denoising loss, namely those where $\Sig^{-1}$ is numerically meaningless. Estimating $\Sig^{-1}$ there needs a regularisation whose level moves the reported threshold by an order of magnitude, whereas \eqref{eq:invfree} needs none: $\operatorname{cond}(\Sy)$ is $56$--$888$ for $\sigma\in[0.25,1]$ where $\operatorname{cond}(\Sig)$ is $3.6\times10^{7}$.
+\end{remark}
 
 \section{The deterministic bound in the Gaussian case}\label{sec:gauss}
 
