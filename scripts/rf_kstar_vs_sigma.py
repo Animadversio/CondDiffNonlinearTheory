@@ -200,10 +200,12 @@ def main():
         ax.semilogx(ts[m], bay[m], color='crimson', lw=2.6,
                     label=r'oracle Bayes $\mathcal{L}^{\rm Bayes}_\sigma$')
         ax.fill_between(ts[gen_ok], bay[gen_ok], lin[gen_ok], color='seagreen', alpha=.25,
-                        label='gap an RF denoiser could close')
+                        label=r'largest attainable $\mathcal{L}^{\rm lin}_\sigma-\mathcal{L}^{\rm RF}_\sigma$'
+                              '\n' r'(attained only if $\mathcal{L}^{\rm RF}_\sigma=\mathcal{L}^{\rm Bayes}_\sigma$)')
         ax.fill_between(ts[m & (ts < sm)], bay[m & (ts < sm)], lin[m & (ts < sm)],
                         color='0.55', alpha=.30, hatch='//', ec='0.35', lw=0,
-                        label='memorisation artifact ($N_{\\rm eff}<2$)')
+                        label=r'not a real $\mathcal{L}^{\rm lin}_\sigma-\mathcal{L}^{\rm RF}_\sigma$:'
+                              '\n' r'memorisation ($N_{\rm eff}<2$)')
         ax.set_xlim(SIG_LO, SIG_HI)
         ax.axvline(sm, color='0.30', ls='-', lw=1.6)
         ax.annotate(f'$N_{{\\rm eff}}\\!=\\!2$\nat $\\sigma$={sm:.2f}', xy=(sm, ax.get_ylim()[1] * 0.10),
@@ -211,18 +213,19 @@ def main():
                     fontsize=9.5, color='0.20')
         pk = ts[gen_ok][np.argmax((lin - bay)[gen_ok])]
         ax.axvline(pk, color='seagreen', ls=':', lw=2.0)
-        ax.annotate(f'gap peaks  $\\sigma$={pk:.2f}', xy=(pk, ax.get_ylim()[1] * 0.62),
+        ax.annotate(f'max  $\\sigma$={pk:.2f}', xy=(pk, ax.get_ylim()[1] * 0.62),
                     xytext=(7, 0), textcoords='offset points', fontsize=10.5,
                     color='seagreen', fontweight='bold')
         ax.set_ylabel('MSE'); ax.grid(True, alpha=.3)
-        ax.set_title(f'{name}  ($d={d}$):  where a nonlinear denoiser has room')
-        ax.legend(fontsize=9.5, loc='upper left')
+        ax.set_title(f'{name}  ($d={d}$):  how much an RF denoiser could gain')
+        ax.legend(fontsize=8.8, loc='upper left')
 
         # ---- bottom: the threshold ----
         ax2 = axes[1][j]
         for tol, c, mk in zip(TOLS, ('#1f4e9c', '#5aa2e8'), ('o', 's')):
             ax2.loglog(sigmas, tol * d / (4 * r['chk']), color=c, marker=mk, lw=2.4, ms=5,
-                       label=rf'$k(\mathrm{{gap}}\leq{tol})=\tau d/(4\check\varepsilon_w^2)$')
+                       label=r'$(\mathcal{L}^{\rm lin}_\sigma-\mathcal{L}^{\rm RF}_\sigma)/d\leq'
+                             rf'{tol}$   ($k\leq\tau d/4\check\varepsilon_w^2$)')
         ax2.loglog(sigmas, d / r['hat'], color='0.45', ls='--', lw=2.0,
                    label=r'$d/\hat\varepsilon_w^{\,2}$  (writeup form, $\Xi$ dropped)')
         ax2.axhline(float(d) ** N0, color='indianred', ls='-.', lw=1.8,
@@ -233,8 +236,8 @@ def main():
         ax2.set_xlim(SIG_LO, SIG_HI)
         ax2.set_xlabel(r'$\sigma$'); ax2.set_ylabel('number of RF features $k$')
         ax2.grid(True, alpha=.3, which='both')
-        ax2.set_title(f'{name}: features below which linear is guaranteed to win')
-        ax2.legend(fontsize=9.5, loc='upper left')
+        ax2.set_title(f'{name}: widths $k$ at which the gain is guaranteed small')
+        ax2.legend(fontsize=8.8, loc='upper left')
 
     fig.suptitle('How many ReLU random features before an RF denoiser may beat the linear one?\n'
                  r'Thresholds are shrinkage-free ($\mathrm{Cov}(r)\Delta=\sigma^2\Sigma_y^{-1}\Delta^{\rm raw}$). '
