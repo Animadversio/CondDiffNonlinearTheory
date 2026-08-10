@@ -212,8 +212,13 @@ The supremum is finite: if $(P^\top\Sig P + C)v = 0$ then $\Sig^{1/2}Pv = 0$ and
 \item[(b)] Noise monotonicity: $C \succeq C' \succeq 0 \implies \TT(P, C) \le \TT(P, C')$.
 \item[(c)] Splitting: for any decomposition $P = P_1 + P_2$ and $C = C_1 + C_2$ with $C_i \succeq 0$,
 $\TT(P, C) \le \TT\big([P_1\ P_2],\, \diag(C_1, C_2)\big)$, where $[P_1\ P_2] \in \R^{d\times 2m}$.
-\item[(d)] Block bound: if $C_2 \succ 0$, then
-$\TT\big([P_1\ P_2], \diag(C_1, C_2)\big) \le \TT(P_1, C_1) + \op{\Sig}^{2}\,\Tr\!\big(P_2\, C_2^{-1} P_2^\top\big)$; in particular, for $C_2 = \diag(\lambda^{(j)})_j$ the second term is $\op{\Sig}^2\sum_j \lVert P_{2,j}\rVert^2/\lambda^{(j)}$.
+\item[(d)] Block bound, \emph{sharp form}: let $x \sim \mathcal N(0,\Sig)$, let $\zeta_1 := P_1^\top x + \nu_1$ with $\nu_1 \sim \mathcal N(0, C_1)$ independent of $x$, and let $r := x - \hat x$ be the residual of $x$ on its best \emph{affine} predictor from $\zeta_1$, so that $\Cov(r) \preceq \Sig$. If $C_2 \succ 0$, then
+\[
+\TT\big([P_1\ P_2], \diag(C_1, C_2)\big)
+\;\le\; \TT(P_1, C_1) + \Tr\!\big(\Cov(r)\,P_2\, C_2^{-1} P_2^\top\,\Cov(r)\big)
+\;\le\; \TT(P_1, C_1) + \op{\Sig}^{2}\,\Tr\!\big(P_2\, C_2^{-1} P_2^\top\big) ;
+\]
+in particular, for $C_2 = \diag(\lambda^{(j)})_j$ the middle term is $\sum_j \lVert\Cov(r)P_{2,j}\rVert^2/\lambda^{(j)}$ and the last is $\op{\Sig}^2\sum_j \lVert P_{2,j}\rVert^2/\lambda^{(j)}$. Only the \emph{second} inequality discards the conditioning of $\Sig$; the first is an identity-level bound with no spectral constant in it at all (Remark~\ref{rem:covr}).
 \item[(e)] Linear ceiling: $\TT\big(\bar B,\, \sigma^2\bar B^\top\bar B\big) \le \Tr\big(\Sig\Sy^{-1}\Sig\big)$.
 \end{enumerate}
 \end{lemma}
@@ -239,7 +244,7 @@ Two orthogonality facts: (i) $r \perp \operatorname{span}(\zeta_1)$ and $\Pi\zet
 \[
 \mathrm{EV}(r; \tilde\zeta_2) \;\le\; \Tr\big(\Cov(r,x)\,P_2\,C_2^{-1}P_2^\top\,\Cov(x,r)\big) \;\le\; \op{\Cov(r,x)}^2\,\Tr\big(P_2C_2^{-1}P_2^\top\big) \;\le\; \op{\Sig}^2\,\Tr\big(P_2C_2^{-1}P_2^\top\big),
 \]
-and $\mathrm{EV}(x;\zeta_1) = \TT(P_1, C_1)$. For diagonal $C_2$ the trace is $\sum_j\lVert P_{2,j}\rVert^2/\lambda^{(j)}$ with $P_{2,j}$ the $j$-th column.
+and $\mathrm{EV}(x;\zeta_1) = \TT(P_1, C_1)$. Since $\Cov(r,x) = \Cov(r)$ is symmetric, the first bound is the middle term of the statement; the second and third together are the crude one. For diagonal $C_2$ the middle trace is $\sum_j\lVert\Cov(r)P_{2,j}\rVert^2/\lambda^{(j)}$ and the crude one $\sum_j\lVert P_{2,j}\rVert^2/\lambda^{(j)}$, with $P_{2,j}$ the $j$-th column.
 
 (e) The quadratic form matrix is $\bar B^\top\Sig\bar B + \sigma^2\bar B^\top\bar B = \bar B^\top\Sy\bar B$, and the linear coefficient satisfies the range condition $\operatorname{range}(\bar B^\top\Sig) \subseteq \operatorname{range}(\bar B^\top\Sy^{1/2})$ (write $\bar B^\top\Sig = (\bar B^\top\Sy^{1/2})(\Sy^{-1/2}\Sig)$), so the supremum is attained and
 \[
@@ -292,7 +297,7 @@ Branch on $\Delta$ first. If $\Delta = 0$, no floor is needed: the chain below r
 \;\overset{(d)}{\le}\; \TT\big(\bar B,\, \sigma^2\bar B^\top\bar B\big) + \op{\Sig}^{2}\Tr\big(\Delta D^{-1}\Delta^\top\big)
 \;\overset{(e)}{\le}\; \Tr\big(\Sig\Sy^{-1}\Sig\big) + \frac{\op{\Sig}^{2}}{\rho_*}\sum_{j\le k}\frac{\lVert\Delta_{\theta_j,\epsilon_j}\rVert^2}{\gamma_j},
 \]
-where in (d) the constant is sharp because $\Cov(r) \preceq \Sig$ gives $\op{\Cov(r,x)} \le \op{\Sig}$. \emph{That last step is where the conditioning of $\Sig$ is discarded; Remark~\ref{rem:covr} records what is available if it is not taken.} Lemma~\ref{lem:calc}(a) converts this to the boxed inequality of the theorem. Nothing here constrains $k$, $d$, or the offsets, and $p_0$ enters only through $\Sig \succ 0$ and the exponential-moment condition \eqref{eq:expmom}.
+where in (d) we have taken the \emph{crude} branch, using $\Cov(r) \preceq \Sig$ to replace $\op{\Cov(r,x)}$ by $\op{\Sig}$. \emph{That is the only step in the chain where the conditioning of $\Sig$ is discarded; keeping the middle branch of Lemma~\ref{lem:calc}(d) instead gives the sharp form \eqref{eq:sharp-master} of Remark~\ref{rem:covr}, which carries no spectral constant at all.} Lemma~\ref{lem:calc}(a) converts this to the boxed inequality of the theorem. Nothing here constrains $k$, $d$, or the offsets, and $p_0$ enters only through $\Sig \succ 0$ and the exponential-moment condition \eqref{eq:expmom}.
 
 \end{proof}
 
@@ -564,6 +569,24 @@ Therefore, by Cauchy--Schwarz over the parameter law,
 Passing to a fourth moment costs nothing in the regime table. The proof of Lemma~\ref{lem:defect} bounds the defect \emph{pointwise} in $\theta$ --- e.g.\ $\lVert\Delta_\theta\rVert^2 \le C\sum_a(\theta_a^4\kappa_{3,a}^2 + |\theta_a|^6)$ in the skewed case --- so squaring that bound and taking $\E_\theta$ with $\E\theta_a^8 = 105/d^4$ reproduces the same rates squared: $\hat\varepsilon_d^{\,2} \le C(1+\Fro{\kappa_3}^2)/d^2$ and, in the symmetric case, $\hat\varepsilon_d^{\,2} \le C(1+\Fro{\kappa_4}^2)/d^3$. Every entry of Corollary~\ref{cor:table} therefore stands with $\varepsilon_d$ replaced by $\hat\varepsilon_d$.
 \end{remark}
 
+\begin{remark}[$\Xi$ is finite but not small: where the bound is genuinely weak]\label{rem:xi-sigma}
+Assumption~\ref{ass:bias} asserts only $\Xi < \infty$. It does \emph{not} assert $\Xi = O(1)$, and the gap between those two statements is the gap between an asymptotic statement in $d$ and a usable number at a fixed $d$. Lemma~\ref{lem:ratio} is the only place $\Xi$ enters, and it enters multiplicatively: the headline threshold $k_* = d/\hat\varepsilon_d^{\,2}$ is the $\check\varepsilon_d$-threshold with $\Xi$ absorbed into the suppressed constant.
+
+\emph{The rate.} $\Xi$ is governed by $1/\gamma$, and for an activation whose band $[n_0,N]$ opens only at order $n_0$ --- ReLU is the case of interest --- the Mehler energy vanishes at small argument like $\gamma \asymp s^{2n_0}$ with $s = \sigma\lVert\theta\rVert$. Hence $\Xi$ diverges as $\sigma \to 0$, at rate $\sigma^{-2n_0}$. This is the same mechanism that forces the norm indicator $\mathbf 1\{\lVert\theta\rVert\in[\frac12,2]\}$ into the definition of $\check\varepsilon_d$ (proof of Theorem~\ref{thm:prob}); there it is a statement about small $\lVert\theta\rVert$, here about small $\sigma$, but it is one phenomenon.
+
+\emph{Measured.} On CIFAR-10 pixels ($d=3072$, $n_0=2$, $N=6$), the mean band energy $\gamma$ is
+\[
+4.4\times10^{-5},\quad 7.4\times10^{-4},\quad 1.1\times10^{-2},\quad 1.1\times10^{-1},\quad 8.0\times10^{-1}
+\qquad\text{at}\qquad
+\sigma = 0.067,\ 0.174,\ 0.452,\ 1.17,\ 3.04,
+\]
+a growth of $1.6\times10^4$ across the sweep (empirical exponent $\approx 3$ at the low end, drifting toward $\approx 2$ at the high end). Correspondingly $\check\varepsilon_{d,w}^{\,2}/\hat\varepsilon_{d,w}^{\,2}$ runs from $9.5\times10^{3}$ at $\sigma = 0.067$ down to $0.6$ at $\sigma = 3.04$. So at small $\sigma$ the quantity $d/\hat\varepsilon_{d,w}^{\,2}$ overstates the width at which the guarantee actually expires by four orders of magnitude, and only the $\check\varepsilon$-form should be quoted as a number.
+
+\emph{What this does \emph{not} affect.} $\Xi$ is a functional of the modulus $m$, the offset law, $\sigma$ and $\bar c$ --- and of $d$ nowhere. Every $d$-scaling consequence of Theorem~\ref{thm:prob} (Corollary~\ref{cor:table}, and the exponent $\alpha$ in $\hat\varepsilon_d^{\,2}\asymp d^{-\alpha}$) is therefore untouched: $\Xi$ is a $d$-independent multiplicative constant, so it shifts $k_*$ but not its slope in $d$. Empirically, changing $d$ by a factor $4$ (MNIST $784 \to$ CIFAR-10 $3072$) moves $\check\varepsilon_{d,w}^{\,2}/\hat\varepsilon_{d,w}^{\,2}$ by less than $1.5\times$, with no consistent sign. Only absolute thresholds at fixed $d$ are affected.
+
+\emph{What it does affect, and how one would fix it.} Since $\gamma \asymp \sigma^{2n_0}$, the bound is weakest at small $\sigma$ --- which is precisely the regime where $\mathcal L^{\mathrm{lin}}_\sigma - \mathcal L^{\mathrm{Bayes}}_\sigma$ is largest and where the question ``can a random-feature denoiser beat the linear one'' is interesting. The looseness is thus \emph{structural in the activation}, not a deficiency of the defect estimate: it says that at low noise a ReLU feature carries very little energy above the linear order, so its ridge floor is thin and the defect is charged against almost nothing. Tightening the low-$\sigma$ regime is a question about the activation and offset law (raising the band energy at small $s$), not about estimating $\Delta$ more accurately. This is the honest limitation of the present bound.
+\end{remark}
+
 \section{The probabilistic theorem}\label{sec:prob}
 
 With $\rho_* \ge \tfrac12$ from Section~\ref{sec:tensor} and the defect sum controlled in mean by Sections~\ref{sec:defect}--\ref{sec:ratio}, Theorem~\ref{thm:master} can be evaluated on a high-probability event. The proof is short, because all the work has been done: it is three tail estimates and a substitution into the deterministic bound.
@@ -591,6 +614,23 @@ The offsets are never truncated; the norm event on the weights is retained, at t
 \]
 so that $\tfrac1d\mathcal L^{\mathrm{RF}}_\sigma \ge \tfrac1d\mathcal L^{\mathrm{lin}}_\sigma - o(1)$ whenever $k\hat\varepsilon_d^{\,2} = o(d)$, i.e.\ below the threshold $k_* = \min\big(d/\hat\varepsilon_d^{\,2},\ d^{\,n_0 - o(1)}\big)$.
 
+\medskip
+\noindent\emph{Sharp form.} Assume in addition that $\operatorname{rank}(\bar B) = d$ --- almost sure once $k \ge d$ and $\bar\alpha_j \ne 0$ a.s.\ (Remark~\ref{rem:bias-role}), and exactly the tightness condition of Lemma~\ref{lem:calc}(e). Then by Remark~\ref{rem:covr}(i) the residual covariance is the \emph{deterministic} Wiener residual
+\[
+W \;:=\; \Cov(r) \;=\; \sigma^2\Sig\Sy^{-1},
+\]
+free of $\Theta$. Defining the \emph{weighted} normalized and raw defects
+\[
+\check\varepsilon_{d,w}^{\,2} := \E_{\theta,\epsilon}\!\left[\frac{\lVert W\Delta_{\theta,\epsilon}\rVert^2}{\gamma(\theta,\epsilon)}\,\mathbf 1\big\{\lVert\theta\rVert\in[\tfrac12,2]\big\}\right],
+\qquad
+\hat\varepsilon_{d,w}^{\,4} := \E_{\theta,\epsilon}\big\lVert W\Delta_{\theta,\epsilon}\big\rVert^{4},
+\]
+the same event carries
+\[
+\boxed{\ \ \mathcal L^{\mathrm{RF}}_\sigma \;\ge\; \mathcal L^{\mathrm{lin}}_\sigma \;-\; 2\,\frac{k\,\check\varepsilon_{d,w}^{\,2}}{\delta}\ \ }
+\]
+with \emph{no} $\op{\Sig}^2$ factor, and Lemma~\ref{lem:ratio} applies verbatim with $W\Delta$ in place of $\Delta$ (its proof touches only the denominator $\gamma$), giving $\check\varepsilon_{d,w}^{\,2} \le \tfrac43\Xi\,\hat\varepsilon_{d,w}^{\,2}$ and hence $k_* = \min\big(d/\hat\varepsilon_{d,w}^{\,2},\ d^{\,n_0-o(1)}\big)$. By \eqref{eq:invfree} this threshold is computable with no inverse of $\Sig$: $W\Delta_{\theta,\epsilon} = \sigma^2\Sy^{-1}\Delta^{\mathrm{raw}}_{\theta,\epsilon}$.
+
 \end{theorem}
 
 \begin{proof}[Proof of Theorem~\ref{thm:prob}]
@@ -612,10 +652,18 @@ On $\mathcal E_1$ every indicator equals one, so the truncated statistic coincid
 \]
 The indicator in the definition of $\check\varepsilon_d$ is what licenses the use of the modulus in Lemma~\ref{lem:ratio}: the envelope of Assumption~\ref{ass:act} is stated only for $s \in [\tfrac\sigma2, 2\sigma]$, and $1/\gamma$ may genuinely diverge as $\lVert\theta\rVert \to 0$ (the band energy scales like $s^{2n_0}$ there), so the good-norm restriction is not removable. The conversion to $\hat\varepsilon_d$ is Lemma~\ref{lem:ratio}.
 
+\emph{The Markov step in the sharp form.} Replace $\mathcal E_3$ by
+\[
+\mathcal E_3^{w} \;=\; \Big\{\ \sum_{j\le k}\frac{\lVert W\Delta_{\theta_j,\epsilon_j}\rVert^2}{\gamma_j}\,\mathbf 1_{G_j} \;\le\; \frac{k\,\check\varepsilon_{d,w}^{\,2}}{\delta}\ \Big\},
+\]
+and run the chain of Theorem~\ref{thm:master} with the middle term of Lemma~\ref{lem:calc}(d) instead of the crude one, i.e.\ through \eqref{eq:sharp-master}. The one point needing care is that Markov's inequality requires the summands to be i.i.d.\ functions of $(\theta_j,\epsilon_j)$ \emph{alone}. In general $\Cov(r)$ is a functional of the whole design $\Theta$ through $\bar B$, and then $\lVert\Cov(r)\Delta_j\rVert^2$ couples the features and the mean of the sum is \emph{not} $k\check\varepsilon_{d,w}^{\,2}$. Under $\operatorname{rank}(\bar B)=d$ this coupling disappears: by Remark~\ref{rem:covr}(i) the affine predictors reachable from $\zeta_1$ are exactly those reachable from $y$, so $\hat x$ is the Wiener filter and $\Cov(r) = W = \sigma^2\Sig\Sy^{-1}$ is a fixed matrix depending only on $(\Sig,\sigma)$. The summands are then i.i.d., their common mean is $\check\varepsilon_{d,w}^{\,2}$ by definition, and $\mathbb P\big((\mathcal E_3^{w})^c\big) \le \delta$ exactly as before. Since $\{\operatorname{rank}(\bar B)=d\}$ has probability one under the stated hypothesis, conditioning on it costs no additional probability.
+
+For $k < d$ --- or in the degenerate case $\bar\alpha_j \equiv 0$ --- the rank condition fails, and one has only $\Cov(r) \succeq W$ (fewer predictors, larger residual). That is the \emph{wrong} direction for an upper bound on the error term, so $W$ may not be substituted there and one falls back on the $\op{\Sig}^2$ form. This is no loss in the regime of interest, which is $k \gtrsim d$.
+
 \end{proof}
 
 \begin{remark}[Reading the constants]\label{rem:constants}
-Every quantity in Theorem~\ref{thm:master} is computable from $(\Theta, \epsilon, p_0, \omega, \sigma)$ with no hidden dependence: $\op{\Sig}$ is the top eigenvalue of the prior covariance (it enters squared because it bounds the residual covariance $\Cov(r) \preceq \Sig$ \emph{and} the signal coupling $\Cov(r,x_0)$ in Lemma~\ref{lem:calc}(d)); $\rho_*\gamma_j$ is the $j$-th diagonal entry of the ridge floor of Lemma~\ref{lem:agg}, i.e.\ feature $j$'s own share of the Mehler noise in the band $[n_0,N]$; and $\lVert\Delta_{\theta_j,\epsilon_j}\rVert^2$ is its realized Stein defect. The passage from Theorem~\ref{thm:master} to Theorem~\ref{thm:prob} trades exactly two of these for tail bounds --- $\rho_* \ge \tfrac12$ (Lemma~\ref{lem:tensor}) and $\sum_j \lVert\Delta_j\rVert^2/\gamma_j \le k\check\varepsilon_d^{\,2}/\delta$ (Markov) --- so the factor $2$ and the $1/\delta$ are the entire price of going from deterministic to high-probability. Note that Theorem~\ref{thm:master} refers to the parameter law nowhere: it holds for arbitrary fixed $(\Theta,\epsilon)$, so a different bias distribution changes only the two tail estimates. This is what makes the per-feature form worth the extra notation: in the earlier form, with a single floor $\min_j\gamma_j$, an unbounded offset law forces a truncation at $\tau_k \asymp \sigma_\epsilon\sqrt{\log k}$ and costs a factor $k^{\Theta(\sigma_\epsilon^2/\sigma^2)}$ --- a genuine polynomial loss that bounding $\sigma_\epsilon$ alone does not remove, since the exponent is a constant but the factor is not (Remark~\ref{rem:bias-cost}).
+Every quantity in Theorem~\ref{thm:master} is computable from $(\Theta, \epsilon, p_0, \omega, \sigma)$ with no hidden dependence: $\op{\Sig}$ is the top eigenvalue of the prior covariance (it enters squared because it bounds the residual covariance $\Cov(r) \preceq \Sig$ \emph{and} the signal coupling $\Cov(r,x_0)$ in Lemma~\ref{lem:calc}(d) --- and it disappears entirely in the sharp form, where $\Cov(r)$ is retained rather than bounded); $\rho_*\gamma_j$ is the $j$-th diagonal entry of the ridge floor of Lemma~\ref{lem:agg}, i.e.\ feature $j$'s own share of the Mehler noise in the band $[n_0,N]$; and $\lVert\Delta_{\theta_j,\epsilon_j}\rVert^2$ is its realized Stein defect. The passage from Theorem~\ref{thm:master} to Theorem~\ref{thm:prob} trades exactly two of these for tail bounds --- $\rho_* \ge \tfrac12$ (Lemma~\ref{lem:tensor}) and $\sum_j \lVert\Delta_j\rVert^2/\gamma_j \le k\check\varepsilon_d^{\,2}/\delta$ (Markov) --- so the factor $2$ and the $1/\delta$ are the entire price of going from deterministic to high-probability. Note that Theorem~\ref{thm:master} refers to the parameter law nowhere: it holds for arbitrary fixed $(\Theta,\epsilon)$, so a different bias distribution changes only the two tail estimates. This is what makes the per-feature form worth the extra notation: in the earlier form, with a single floor $\min_j\gamma_j$, an unbounded offset law forces a truncation at $\tau_k \asymp \sigma_\epsilon\sqrt{\log k}$ and costs a factor $k^{\Theta(\sigma_\epsilon^2/\sigma^2)}$ --- a genuine polynomial loss that bounding $\sigma_\epsilon$ alone does not remove, since the exponent is a constant but the factor is not (Remark~\ref{rem:bias-cost}).
 \end{remark}
 
 \section{Corollaries and remarks}\label{sec:corollaries}
