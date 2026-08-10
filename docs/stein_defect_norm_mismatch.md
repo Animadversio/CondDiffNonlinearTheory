@@ -124,3 +124,58 @@ genuinely true, but:
 
 So PCA is the right move only if the object of study is redefined to be the r-dimensional
 representation. As a fix for the reported `k_*` it is a category error.
+
+
+## Is `Cov(r) <= Sigma` used anywhere else?  No -- the change is local
+
+Traced every occurrence in the note.
+
+**`Cov(r) <= Sigma` appears exactly once**: line 238, inside the proof of Lemma
+(calculus of T) step (d), and only to conclude `||Cov(r,x)||_op <= bar c`. Lines 293 and
+580 merely restate it in commentary. There is no independent use.
+
+**Every appearance of `||Sigma||_op` descends from that single step**:
+
+| line | where | status |
+|---|---|---|
+| 216 | statement of Lemma calc(d) | the claim to be modified |
+| 240 | proof of (d) | the discarding step itself |
+| 271 | boxed master theorem | downstream of (d) |
+| 290, 291 | assembly chain | downstream |
+| 547, 572, 573 | Theorem (prob) | downstream |
+| 580 | commentary | -- |
+
+So replacing the step-(d) conclusion propagates mechanically; nothing else has to be
+re-proved on that account.
+
+**`bar c` IS used elsewhere, but for an unrelated purpose.** Lines 339 (Assumption: data,
+`c I <= Sigma <= bar c I`), 353, 356, 375, 377 and 513 use `bar c` to bound
+`Var(u) = theta^T Sigma theta <= 4 bar c` for the pre-activation `u = theta^T x_0 +
+epsilon`, which fixes the level `R_0 = 2 tau_eps + 4 sqrt(bar c)` at which the activation
+modulus `m(R)` must be positive. That is a statement about the ACTIVATION, not about the
+signal coupling, and is untouched by reweighting step (d). (Line 443 is inside Lemma 9,
+the product-measure route, which is not used here anyway.)
+
+## The refined weight is Theta-independent for k >= d
+
+One might worry that `Cov(r)` depends on the design, since `r` is the residual of
+predicting `x` from `zeta_1 = bar B^T x + nu_1`. It does not, in the regime of interest.
+By construction `nu_1 ~ N(0, sigma^2 bar B^T bar B)`, so
+
+    zeta_1  =d  bar B^T (x + sigma Z)  =  bar B^T y,
+
+i.e. `zeta_1` is exactly the matched linear read of the noisy observation. If `bar B^T` has
+full column rank `d` -- generic once `k >= d` -- the map `y -> bar B^T y` is injective, so
+`sigma(zeta_1) = sigma(y)` and the best predictor is the Wiener filter itself. Hence
+
+    Cov(r) = Sigma - Sigma Sigma_y^{-1} Sigma = sigma^2 Sigma (Sigma + sigma^2 I)^{-1},
+
+deterministic and independent of `Theta`. For `k < d` the read is a compression and
+`Cov(r) >=` this, so the Wiener residual is the right (and favourable) surrogate throughout.
+
+Since the whole point of `k_*` is the regime `k ~ 10^4 >> d`, the refined error term
+
+    (1/rho_*) sum_j || sigma^2 Sigma (Sigma + sigma^2 I)^{-1} Delta_j ||^2 / gamma_j
+
+is fully explicit, needs no new probabilistic input, and is what the existing proof
+already establishes one line above the operator-norm step.
