@@ -164,14 +164,39 @@ By construction `nu_1 ~ N(0, sigma^2 bar B^T bar B)`, so
 
     zeta_1  =d  bar B^T (x + sigma Z)  =  bar B^T y,
 
-i.e. `zeta_1` is exactly the matched linear read of the noisy observation. If `bar B^T` has
-full column rank `d` -- generic once `k >= d` -- the map `y -> bar B^T y` is injective, so
-`sigma(zeta_1) = sigma(y)` and the best predictor is the Wiener filter itself. Hence
+i.e. `zeta_1` is exactly the matched linear read of the noisy observation.
+
+The relevant statement is about AFFINE prediction, not about conditional expectations:
+`x_hat` in step (d) is the best *affine* predictor of `x` from `zeta_1`, so what matters is
+which affine functions of `y` are reachable. The predictors available from `zeta_1` are
+
+    V zeta_1 + b = (V bar B^T) y + b,
+
+and as `V` ranges over `R^{d x k}`, `A = V bar B^T` ranges over exactly those `A` whose row
+space lies in `range(bar B)`. Hence
+
+    rank(bar B) = d   <=>   { affine functions of zeta_1 }  =  { affine functions of y },
+
+which is generic once `k >= d`. (Phrasing this as `sigma(zeta_1) = sigma(y)`, i.e. "knowing
+zeta_1 is the same as knowing y", is also true and gives the same condition, but it is
+strictly stronger than needed -- it would equate the NONLINEAR predictors too -- and it
+imports conditional expectations into an argument that is purely affine. The surrogate is
+Gaussian so best-affine and `E[x | .]` coincide there anyway; the span statement is simply
+the one that stays inside the lemma's own setting.)
+
+With the affine classes equal, `x_hat` is the Wiener filter and hence
 
     Cov(r) = Sigma - Sigma Sigma_y^{-1} Sigma = sigma^2 Sigma (Sigma + sigma^2 I)^{-1},
 
-deterministic and independent of `Theta`. For `k < d` the read is a compression and
-`Cov(r) >=` this, so the Wiener residual is the right (and favourable) surrogate throughout.
+deterministic and independent of `Theta`. For `k < d` the reachable affine class is a
+strict subset and `Cov(r) >=` this, so the Wiener residual is the right (and favourable)
+surrogate throughout.
+
+Caveat: `rank(bar B) = d` is genuine, not automatic. `bar B = Theta^T diag(bar alpha)`
+loses rank if any `bar alpha_j = 0` -- and the note's own remark on offsets records the
+extreme case: with `epsilon = 0` and `omega` even, `bar alpha_j = 0` for symmetric projected
+marginals and `bar B = 0` entirely. So the claim carries the same non-degeneracy hypothesis
+used there: for a.e. draw of a non-degenerate offset law, `rank(bar B) = d` once `k >= d`.
 
 Since the whole point of `k_*` is the regime `k ~ 10^4 >> d`, the refined error term
 
