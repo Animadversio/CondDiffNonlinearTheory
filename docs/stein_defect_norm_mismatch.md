@@ -49,6 +49,49 @@ directions where `Sigma` is at numerical-noise level (865 of 3072 eigenvalues ar
    stable in the shrinkage (5.2e-5 to 6.1e-5 across two decades of ridge, vs a 3.4x swing
    for the Euclidean one).
 
+## CORRECTION: the sharp quantity is already in the proof, and it is not `Delta^T Sigma Delta`
+
+An earlier version of this note suggested replacing `||Sigma||_op^2 ||Delta||^2` by
+`Delta^T Sigma Delta`. That was the right instinct but the wrong object. Tracing
+Lemma (calculus of T), step (d), the chain is
+
+    EV(r; zeta2~)  <=  Tr( Cov(r,x) P_2 C_2^{-1} P_2^T Cov(x,r) )        <- SHARP
+                   <=  ||Cov(r,x)||_op^2 Tr( P_2 C_2^{-1} P_2^T )        <- weighting discarded HERE
+                   <=  ||Sigma||_op^2   Tr( P_2 C_2^{-1} P_2^T )         <- Cov(r) <= Sigma
+
+so the sharp per-feature error term is
+
+    sum_j  || Cov(r) Delta_j ||^2 / (rho_* gamma_j),
+
+weighted by `Cov(r)` -- the residual covariance of the matched LINEAR model -- not by
+`Sigma`. In the wide-feature limit `Cov(r)` is the Wiener residual
+
+    Cov(r) = sigma^2 Sigma (Sigma + sigma^2 I)^{-1},   eigenvalues  sigma^2 lam/(lam + sigma^2).
+
+This is better than a `Sigma` weighting in BOTH tails:
+  * small lam (near-null directions): weight -> lam, so they are suppressed, as `Sigma`
+    weighting would also do;
+  * large lam: weight SATURATES at `sigma^2` rather than growing to `||Sigma||_op`.
+The second is what the operator-norm step throws away, and it is the larger effect:
+`||Sigma||_op^2 = 3070` at CIFAR scale versus a cap of `sigma^4 = 0.0039` at sigma = 0.25.
+
+Measured on CIFAR-10 pixels:
+
+| sigma | shrink | `\|\|Sigma\|\|_op^2 E\|\|Delta\|\|^2` | `E\|\|Cov(r)Delta\|\|^2` | loose / sharp |
+|---|---|---|---|---|
+| 0.25 | 1e-4 | 2.56e+03 | 3.77e-07 | 6.8e9 |
+| 0.25 | 1e-2 | 5.40e+02 | 3.81e-07 | 1.4e9 |
+| 0.5  | 1e-4 | 1.45e+03 | 7.88e-07 | 1.8e9 |
+| 0.5  | 1e-2 | 4.57e+02 | 8.01e-07 | 5.7e8 |
+| 1.0  | 1e-4 | 6.44e+02 | 1.45e-06 | 4.4e8 |
+| 1.0  | 1e-2 | 3.87e+02 | 1.47e-06 | 2.6e8 |
+
+Two things to note. The gap is 8-10 orders of magnitude, not the 6-7 estimated from the
+`Sigma`-weighted proxy. And the sharp quantity is **essentially shrinkage-free**
+(3.77e-07 vs 3.81e-07 across two decades of ridge, i.e. 1%, versus a 4.7x swing for the
+loose one) -- because `Cov(r)` annihilates exactly the near-null subspace that made
+`Sigma^{-1}` ill-posed in the first place.
+
 ## Where this enters the proof
 
 `||Sigma||_op` is introduced at a single step of the master theorem: step (d), justified by
