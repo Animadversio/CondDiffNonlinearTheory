@@ -24,6 +24,10 @@ _SQRT2PI = float(np.sqrt(2.0 * np.pi))
 
 
 def _to(x, device, dtype):
+    # torch.as_tensor(np.asarray(t)) raises for a CUDA tensor, so route tensors directly;
+    # this also avoids a pointless GPU->host->GPU round trip for callers already on device.
+    if torch.is_tensor(x):
+        return x.to(device=device, dtype=dtype)
     return torch.as_tensor(np.asarray(x), device=device, dtype=dtype)
 
 
