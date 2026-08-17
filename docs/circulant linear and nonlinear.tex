@@ -566,4 +566,31 @@ rises above its starting value $\Delta_{\text{stat}}$ before decaying
 to $0$ along $k$, which can be non-monotone. Point is if we can
 compute these quantities from our data set then we get a set of $k$
 where the circulant denoiser outperforms the dense denoiser.
+\section{Banded Circulant Matrix}
+
+Here we focus on leveraging the properties of the circulant matrix
+to potentially utilize the locality of neighboring coordinates there
+is in the data distribution -- to mirror the idea of convolutional
+networks like in DNNs. In this setup, each random matrices projections
+output should only include the neighboring coordinates instead of
+all coordinates of $\boldsymbol{y}$. Therefore in block-circulant
+$\Theta$ we should band the input to have some $t<d$ contiguous
+non-zero entries, i.e. for each $1\leq a\leq k$, $h_{a}=\begin{bmatrix}a_{1} & \dots & a_{t} & 0 & \dots & 0\end{bmatrix}$.
+And so entry:
+\[
+[\Theta_{a}\boldsymbol{y}]_{\tau}=h^{\top}_{a}S^{-\tau}\boldsymbol{y}
+\]
+would only depend on the $\{\tau+1,\tau+2,\dots,\tau+t\}$ being non-zero
+of $\boldsymbol{y}.$ Then really $\phi_{a}(\boldsymbol{y})_{\tau}=\omega(\langle h_{a},\text{patch}_{\tau}(\boldsymbol{y})\rangle+\epsilon_{a})$
+where $\text{patch}_{\tau}(\boldsymbol{y})$ zeros out anything in
+$\boldsymbol{y}$ that is not the coordinates in patch $\{\tau+1,\tau+2,\dots,\tau+t\}$.
+So $\Theta_{a}\boldsymbol{y}\in\mathbb{R}^{d}$ won't have any entry
+that mix coordinates that are not $t$-neighbor of each other. Since
+$h_{a}$ is banded, we also scale it to $\mathcal{N}(0,\frac{1}{t}\boldsymbol{I})$
+instead of $\mathcal{N}(0,\frac{1}{d}\boldsymbol{I})$.
+
+On the other hand, the math from Section 4 still stands since nothing
+changes except for $\boldsymbol{\Sigma}_{\phi}$, hence only $\mathbf{P}_{k},\mathbf{q}_{k}$.
+Note that like in Section 4, our denoiser is also learning by patches
+in that the loss can be broken down into that of the $d$ patches.
 \end{document}
