@@ -97,9 +97,15 @@ def circulant_rf_mmse_struct(x0, h, sigma, lam=1e-6, device='cuda', dtype=torch.
     q = torch.zeros(d, c, dtype=cdt, device=device)
     diag_corr = torch.zeros(c, dtype=dtype, device=device)
 
+    Xf = torch.fft.fft(x0.to(cdt), dim=1)          # hoisted; used by the FFT correlation
+
     def _transform(a0, a1):
-        Th = torch.stack([_roll_rows(h[a], d) for a in range(a0, a1)])     # (B, d, d)
-        M = torch.einsum('ni,bpi->bnp', x0, Th)                            # (B, N, d)
+        # M[b,n,p] = sum_i x0[n,i] h_b[(i-p) % d] = sum_u h_b[u] x0[n, u+p], a circular
+        # CORRELATION. Doing it as an explicit (d,d) roll matrix costs O(N d^2) per block,
+        # which is fine at d=784 but not at d=3072 (9.4e10 flops per block). Via FFT it is
+        # O(N d log d) -- ~250x cheaper at d=3072. Verified against the explicit form.
+        Hf = torch.fft.fft(h[a0:a1].to(cdt), dim=1)                        # (B, d)
+        M = torch.fft.ifft(Xf.unsqueeze(0) * Hf.conj().unsqueeze(1), dim=2).real.contiguous()
         sa = s[a0:a1].view(-1, 1, 1)
         z = M / sa
         Phi = _ndtr(z); ph = _npdf(z)
@@ -111,7 +117,7 @@ def circulant_rf_mmse_struct(x0, h, sigma, lam=1e-6, device='cuda', dtype=torch.
         diag_exact = ((M ** 2 + sa ** 2) * Phi + M * sa * ph - G ** 2).mean(1)
         formula = (C1 ** 2).mean(1) + 2.0 * (C2 ** 2).mean(1) + 6.0 * (C3 ** 2).mean(1)
         dc = (diag_exact - formula).sum(1) / d
-        del Th, M, z, Phi, ph, G, C1, C2, C3, Gc
+        del M, z, Phi, ph, G, C1, C2, C3, Gc
         return uu, cc, dc
 
     # Transform every chunk ONCE and park it in host RAM; the pair loop then only moves
