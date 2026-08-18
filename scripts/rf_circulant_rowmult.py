@@ -20,10 +20,11 @@ MS   = [int(x) for x in os.environ.get('MS', '2,4,8').split(',')]
 SIGS = [float(x) for x in os.environ.get('SIGS', '0.010,0.036,0.127,0.452,2.212,7.880').split(',')]
 MODE = os.environ.get('MODE', 'A')        # A: c = m*j   B: c = m (fixed)
 NSEED = int(os.environ.get('NSEED', '2'))
+TBAND = int(os.environ.get('TBAND', '0'))   # 0 = full width; else banded support t
 
 X = standardize(extract('CIFAR-10', n_img=NIMG)['avgpool'].to(DEV, DT))
 N, d = X.shape
-print(f"CIFAR-10 avgpool: N={N}, d={d}   mode={MODE}  (A: c=m*k/d, B: c=m fixed)\n")
+print(f"CIFAR-10 avgpool: N={N}, d={d}   mode={MODE}  t_band={TBAND or 'full'}\n")
 res = {}
 for j in JS:
     for m in MS:
@@ -32,7 +33,13 @@ for j in JS:
             vals = []
             for sd in range(NSEED):
                 g = torch.Generator(device=DEV); g.manual_seed(500 + 31 * sd + c)
-                h = torch.randn(c, d, generator=g, device=DEV, dtype=DT) / np.sqrt(d)
+                if TBAND and TBAND < d:
+                    # banded: h_a supported on first t entries, var 1/t so E||h_a||^2 = 1
+                    h = torch.zeros(c, d, device=DEV, dtype=DT)
+                    h[:, :TBAND] = torch.randn(c, TBAND, generator=g, device=DEV,
+                                               dtype=DT) / np.sqrt(TBAND)
+                else:
+                    h = torch.randn(c, d, generator=g, device=DEV, dtype=DT) / np.sqrt(d)
                 t0 = time.time()
                 vals.append(circulant_rf_mmse_struct(X, h, sg, lam=LAM, device=DEV,
                                                      block_chunk=min(c, 32)))
@@ -43,6 +50,6 @@ for j in JS:
                   f"(dense rows={j*d:>6}, params={j*d*d:>9})  sigma={sg:<6} "
                   f"L={v.mean():>9.4f}+-{v.std(ddof=1) if NSEED>1 else 0:.4f} "
                   f"({time.time()-t0:.0f}s)", flush=True)
-            np.savez(f'tables/rf_circulant_rowmult_{MODE}.npz',
+            np.savez(f'tables/rf_circulant_rowmult_{MODE}{"_t%d"%TBAND if TBAND else ""}.npz',
                      **{f'{k[0]}|{k[1]}|{k[2]}': np.array(v) for k, v in res.items()})
 print("done")
