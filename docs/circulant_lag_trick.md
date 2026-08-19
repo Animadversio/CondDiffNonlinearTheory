@@ -54,27 +54,47 @@ Storage drops from `4 d c^2` to `4 L c^2`, a factor `d / L = 205x`:
 
 At feature-match the dense model has `k = j*d` rows and the circulant has `c = j*d` blocks:
 
+**Corrected 2026-08-18.** An earlier version of this table claimed the build was also a
+constant factor `L`. That was wrong: it counted only the *noise* term and silently omitted
+the *data* term, which is the larger of the two by ~200x. Both are recorded here so the
+error is not repeated.
+
+`Sigma_phi` has two parts and only one of them is banded:
+
+* **noise** `rho^{o n} o (C_n^T C_n)` — `psi` is band-supported, so `L = 2t-1` lags. Cost
+  `N c^2 L`.
+* **data** `Sigma_data^{(a,b)}[p,q] = (1/N) sum_n Gc_a[n,p] Gc_b[n,q]` — **not banded at
+  all.** `phi = relu(Theta y)` is dense whatever `Theta` is, so in lag space `R^G_ab(m)` is
+  nonzero at *all* `d` lags. Streaming one frequency at a time costs `N c d^2`; holding all
+  frequencies costs `N c^2 d`. Either way it is `O(d)` larger than the noise term and it
+  dominates.
+
 | | dense | circulant (lag trick) | ratio |
 |---|---|---|---|
-| build | `N k^2 = N j^2 d^2` | `N c^2 L = N j^2 d^2 L` | **`L = 15`, constant** |
-| memory | `k^2` | `c^2 L` | **`L = 15`, constant** |
-| solve | `k^3 = j^3 d^3` | `d c^3 = j^3 d^4` | **`d = 3072`, NOT constant** |
+| build, noise part | — | `N c^2 L` | — |
+| build, data part | — | `N c d^2` (streamed) | — |
+| **build, total** | `N k^2 = N j^2 d^2` | `N c d^2 + N c^2 L` | **`~d/j`, NOT constant** |
+| **memory** | `k^2` | `(L+1) c^2` | **`~L = 15`, constant** |
+| **solve** | `k^3 = j^3 d^3` | `d c^3 = j^3 d^4` | **`d = 3072`, NOT constant** |
 
-So the claim is **correct for build and memory** and **wrong for the solve**. The solve
-inverts `d` matrices of size `c x c = (jd) x (jd)`, where dense inverts one of size `jd`;
-that is an extra factor of `d` no reordering removes, because it is inherent to having `d`
-independent per-frequency problems each as large as the whole dense problem.
+Measured at `d = 3072`, `N = 10^4`, `t = 8`:
 
-The claim as stated ("constant O as expensive as dense") should therefore be narrowed to
-memory and build, or restated as "constant factor per frequency".
+| k/d | dense build | circ noise | circ data | circ total | ratio |
+|---|---|---|---|---|---|
+| 1 | 9.44e10 | 1.42e12 | 2.90e14 | 2.91e14 | 3087x |
+| 2 | 3.77e11 | 5.66e12 | 5.80e14 | 5.85e14 | 1551x |
 
-Absolute cost is nonetheless fine, because the constant is small and `d c^3` at these sizes
-is not large in wall-clock terms:
+**Verdict: the constant-factor claim holds for MEMORY only.** Build is `~d` times dense and
+solve is `d` times dense. The lag trick removes no flops anywhere — it is purely a memory
+result, and calling it a compute result would overstate it by two to three orders of
+magnitude.
 
-| k/d | dense build | dense solve | circ build | circ solve |
-|---|---|---|---|---|
-| 1 | 7.5e11 | 2.3e11 | 1.1e13 | 7.1e14 (~24 s) |
-| 2 | 3.0e12 | 1.9e12 | 4.5e13 | 5.7e15 (~3 min) |
+The stronger statement that *is* true, and is probably the one for the writeup:
+
+> At equal ROW COUNT the circulant is `d^2` cheaper to build and `d^2` cheaper to store than
+> dense. Feature-match gives the circulant `d` times more rows than the dense model it is
+> matched against, so it pays `d` in build and `d` in solve for a `d^2` structural saving —
+> a net `d`-fold win over what those rows would otherwise cost.
 
 ## 4. What is still not available
 
