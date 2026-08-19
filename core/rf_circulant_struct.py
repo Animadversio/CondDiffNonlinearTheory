@@ -227,3 +227,102 @@ def selftest(seed=0, verbose=True):
 if __name__ == '__main__':
     print("Validating structured block-circulant L^circ against the K x K reference:")
     print("PASS" if selftest() else "FAIL")
+
+
+def circulant_rf_mmse_lag(x0, h, sigma, t_band, lam=1e-6, device='cuda',
+                          dtype=torch.float64, sample_chunk=32, freq_chunk=64):
+    """L^circ with the NOISE term held in LAG space: memory L*c^2 instead of d*c^2.
+
+    psi_ab(m) = sum_j h_a[j] h_b[(j+m) mod d] inherits the band support of h, so only
+    L = 2*t-1 lags are nonzero. Writing m = p-q,
+
+        f_f^H (rho^{o n} o M) f_f = (1/d) sum_{|m|<t} e^{-2 pi i f m/d} psi(m)^n R_ab(m),
+        R_ab(m) = (1/N) sum_n sum_q C_a[n,q+m] C_b[n,q].
+
+    TRADE-OFF, measured: this is a MEMORY result, not a compute one. Each lag costs c^2 N d
+    (it contracts over n AND q) while each frequency costs c^2 N, so the lag form uses
+    L = 2t-1 times MORE flops than the frequency form for L/d times less storage. At
+    d=3072, c=3072, t=8: 432 GB -> 2.1 GB, and 2.9e14 -> 4.3e15 MACs.
+
+    The DATA term is not banded (phi = relu(Theta y) is dense whatever Theta is), so it is
+    streamed one frequency-chunk at a time rather than stored.
+    """
+    x0 = x0.to(device=device, dtype=dtype); h = h.to(device=device, dtype=dtype)
+    N, d = x0.shape; c = h.shape[0]
+    cdt = torch.complex128 if dtype == torch.float64 else torch.complex64
+    L = 2 * t_band - 1
+    lags = torch.arange(-(t_band - 1), t_band, device=device)
+
+    mu = x0.mean(0); X0c = x0 - mu
+    trace_p0 = float((X0c ** 2).sum() / max(N, 1))
+    Xf = torch.fft.fft(x0.to(cdt), dim=1)
+    Hf = torch.fft.fft(h.to(cdt), dim=1)
+    nrm = torch.linalg.norm(h, dim=1); s = sigma * nrm
+
+    # psi on the L nonzero lags only
+    jj = torch.arange(d, device=device)
+    psi = torch.stack([ (h * torch.roll(h, -int(m), dims=1).unsqueeze(0)).sum(-1)
+                        if False else torch.einsum('aj,bj->ab', h, torch.roll(h, -int(m), dims=1))
+                        for m in lags.tolist() ], dim=-1)                     # (c,c,L)
+    psi = psi / (nrm.view(-1, 1, 1) * nrm.view(1, -1, 1))
+
+    def feats(n0, n1):
+        M = torch.fft.ifft(Xf[n0:n1].unsqueeze(0) * Hf.conj().unsqueeze(1), dim=2).real
+        sa = s.view(-1, 1, 1); z = M / sa
+        Phi = _ndtr(z); ph = _npdf(z)
+        G = M * Phi + sa * ph
+        return M, Phi, ph, G, sa
+
+    # pass 1: per-(block,position) feature mean, and the L-lag noise correlations
+    gmean = torch.zeros(c, d, dtype=dtype, device=device)
+    nb = max(1, min(N, int(sample_chunk)))
+    for n0 in range(0, N, nb):
+        M, Phi, ph, G, sa = feats(n0, min(n0 + nb, N)); gmean += G.sum(1); del M, Phi, ph, G
+    gmean /= N
+
+    R = [torch.zeros(c, c, L, dtype=dtype, device=device) for _ in range(3)]
+    diag_corr = torch.zeros(c, dtype=dtype, device=device)
+    for n0 in range(0, N, nb):
+        n1 = min(n0 + nb, N)
+        M, Phi, ph, G, sa = feats(n0, n1)
+        C = [sa * Phi, sa * ph / 2.0, -M * ph / 6.0]
+        de = ((M ** 2 + sa ** 2) * Phi + M * sa * ph - G ** 2).sum(1)
+        fo = (C[0] ** 2).sum(1) + 2.0 * (C[1] ** 2).sum(1) + 6.0 * (C[2] ** 2).sum(1)
+        diag_corr += (de - fo).sum(1) / d
+        for i in range(3):
+            for li, m in enumerate(lags.tolist()):
+                R[i][:, :, li] += torch.einsum('anq,bnq->ab', torch.roll(C[i], -m, dims=2), C[i])
+        del M, Phi, ph, G, C
+        torch.cuda.empty_cache()
+    for i in range(3):
+        R[i] /= N
+    diag_corr /= N
+
+    # pass 2: stream frequencies; data Gram computed on the fly, noise from the L lags
+    v = X0c.to(cdt) @ _dft(d, device, dtype).to(cdt).T
+    coef = (1.0, 2.0, 6.0)
+    expl = 0.0
+    fc = max(1, int(freq_chunk))
+    for f0 in range(0, d, fc):
+        f1 = min(f0 + fc, d); nf = f1 - f0
+        fr = torch.arange(f0, f1, device=device)
+        Uf = torch.zeros(nf, N, c, dtype=cdt, device=device)
+        for n0 in range(0, N, nb):
+            n1 = min(n0 + nb, N)
+            M, Phi, ph, G, sa = feats(n0, n1)
+            Gc = (G - gmean.unsqueeze(1)).to(cdt)
+            E = torch.exp(-2j * np.pi * torch.outer(fr.to(dtype), jj.to(dtype)) / d) / d ** 0.5
+            Uf[:, n0:n1, :] = torch.einsum('fp,anp->fna', E.to(cdt), Gc)
+            del M, Phi, ph, G, Gc
+        P = torch.einsum('fna,fnb->fab', Uf, Uf.conj()) / N
+        q = torch.einsum('fna,nf->fa', Uf, v[:, f0:f1].conj()) / N
+        ph_ = torch.exp(-2j * np.pi * torch.outer(fr.to(dtype), lags.to(dtype)) / d).to(cdt)
+        for i in range(3):
+            P = P + coef[i] * torch.einsum('fm,abm->fab', ph_,
+                                           ((psi ** (i + 1)) * R[i]).to(cdt)) / d
+        P = P + torch.diag_embed(diag_corr.to(cdt)).unsqueeze(0) \
+              + lam * torch.eye(c, dtype=cdt, device=device).unsqueeze(0)
+        sol = torch.linalg.solve(P, q.unsqueeze(-1)).squeeze(-1)
+        expl += float(torch.real(torch.sum(q.conj() * sol)))
+        del Uf, P, q; torch.cuda.empty_cache()
+    return max(0.0, trace_p0 - expl)
