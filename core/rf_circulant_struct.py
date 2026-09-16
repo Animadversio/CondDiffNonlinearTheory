@@ -326,3 +326,182 @@ def circulant_rf_mmse_lag(x0, h, sigma, t_band, lam=1e-6, device='cuda',
         expl += float(torch.real(torch.sum(q.conj() * sol)))
         del Uf, P, q; torch.cuda.empty_cache()
     return max(0.0, trace_p0 - expl)
+
+
+def circulant_rf_mmse_lag2(x0, h, sigma, t_band, lam=1e-6, device='cuda',
+                           dtype=torch.float64, sample_chunk=None, freq_chunk=32,
+                           super_chunk=2048, verbose=False):
+    """Same L^circ as `circulant_rf_mmse_lag`, restructured for speed.
+
+    The old path recomputed the whole (c, N, d) feature tensor once per frequency chunk --
+    384 full passes at freq_chunk=8 -- and that recomputation, not the linear algebra, was
+    where the 3.75 h/seed at c=6144 went. Four changes, none of which touch the estimator:
+
+    1. HERMITIAN SYMMETRY.  Sigma_phi and Sigma_{phi,x0} are real, so P_{d-f} = conj(P_f)
+       and q_{d-f} = conj(q_f); the quadratic form q^H P^{-1} q at d-f is the conjugate of
+       the one at f and contributes the SAME real part.  Only f = 0..d/2 is evaluated, with
+       weight 2 except at f = 0 and f = d/2.  Halves everything in pass 2, including the
+       number of feature passes.  rfft delivers exactly that frequency range.
+
+    2. PREFIX-SUM ACCUMULATION.  The old code held u-hat for all N samples at once
+       ((nf, N, c) complex = 983 MB per frequency at c=6144), which forced freq_chunk=8.
+       Here P and q are running sums over sample super-chunks, so only (nf, NS, c) is live
+       and freq_chunk can be 32-48 -- 6x fewer feature passes.
+
+    3. LAG SYMMETRY.  R_ab(-m) = R_ba(m) and psi_ab(-m) = psi_ba(m), so only the t lags
+       m = 0..t-1 are formed; the negative lags are the transposes.  The lag Grams are the
+       dominant flop cost, so this is a straight 15/8 saving on them.
+
+    4. FFT, NOT A DFT MATMUL.  u-hat was formed as an explicit (nf, d) x (c, nb, d) matmul
+       costing c N d^2; rfft costs c N d log d.
+
+    Validated against `circulant_rf_mmse_lag` and the K x K reference by `selftest_lag2`.
+    """
+    x0 = x0.to(device=device, dtype=dtype); h = h.to(device=device, dtype=dtype)
+    N, d = x0.shape; c = h.shape[0]
+    if d % 2 != 0:
+        raise ValueError("Hermitian folding below assumes even d")
+    cdt = torch.complex128 if dtype == torch.float64 else torch.complex64
+    t = int(t_band); dh = d // 2 + 1
+    sq = d ** 0.5
+
+    if sample_chunk is None:                      # keep (c, nb, d) fp64 near 2 GB
+        sample_chunk = max(1, min(N, int(2.0e9 / (c * d * 8))))
+    nb = int(sample_chunk)
+
+    mu = x0.mean(0); X0c = x0 - mu
+    trace_p0 = float((X0c ** 2).sum() / max(N, 1))
+    Xr = torch.fft.rfft(x0, dim=1)                        # (N, dh)
+    Hr = torch.fft.rfft(h, dim=1)                         # (c, dh)
+    vh = torch.fft.rfft(X0c, dim=1) / sq                  # (N, dh) == v[:, :dh]
+    nrm = torch.linalg.norm(h, dim=1); s = sigma * nrm
+
+    # psi on the non-negative lags only; psi(-m) = psi(m)^T
+    psi = torch.stack([torch.einsum('aj,bj->ab', h, torch.roll(h, -m, dims=1))
+                       for m in range(t)], dim=-1)                        # (c, c, t)
+    psi /= (nrm.view(-1, 1, 1) * nrm.view(1, -1, 1))
+
+    def feats(n0, n1):
+        M = torch.fft.irfft(Xr[n0:n1].unsqueeze(0) * Hr.conj().unsqueeze(1), n=d, dim=2)
+        sa = s.view(-1, 1, 1); z = M / sa
+        Phi = _ndtr(z); ph = _npdf(z)
+        G = M * Phi + sa * ph
+        return M, Phi, ph, G, sa
+
+    # ---- pass 1: feature mean, exact-diagonal correction, and the t lag Grams ----------
+    gmean = torch.zeros(c, d, dtype=dtype, device=device)
+    R = [torch.zeros(c, c, t, dtype=dtype, device=device) for _ in range(3)]
+    diag_corr = torch.zeros(c, dtype=dtype, device=device)
+    for n0 in range(0, N, nb):
+        n1 = min(n0 + nb, N)
+        M, Phi, ph, G, sa = feats(n0, n1)
+        gmean += G.sum(1)
+        C = [sa * Phi, sa * ph / 2.0, -M * ph / 6.0]
+        de = ((M ** 2 + sa ** 2) * Phi + M * sa * ph - G ** 2).sum(1)
+        fo = (C[0] ** 2).sum(1) + 2.0 * (C[1] ** 2).sum(1) + 6.0 * (C[2] ** 2).sum(1)
+        diag_corr += (de - fo).sum(1) / d
+        del M, Phi, ph, G
+        for i in range(3):
+            flat = C[i].reshape(c, -1)
+            for m in range(t):
+                R[i][:, :, m].addmm_(torch.roll(C[i], -m, dims=2).reshape(c, -1), flat.T)
+        del C
+    gmean /= N
+    for i in range(3):
+        R[i] /= N
+    diag_corr /= N
+
+    # Noise lag tensor, REAL and contiguous in the lag axis, with the Hermite coefficients
+    # folded in and the negative lags materialised as transposes:
+    #     B[:, :, i*L + (t-1) + m] = coef_i * psi(m)^{i+1} o R_i(m),   B[..., -m] = that^T.
+    # Keeping it real and in ONE axis turns the whole noise assembly into two (c^2, 3L) x
+    # (3L, nf) matmuls per frequency chunk. The obvious alternative -- a Python loop over
+    # the 3L lags accumulating e^{-2pi i f m/d} * A_m into P -- allocates an (nf, c, c)
+    # COMPLEX temporary 45 times per chunk, which at c=6144 is 45 x 19 GB of memory traffic
+    # per chunk and is slower than the code this replaces.
+    coef = (1.0, 2.0, 6.0)
+    L = 2 * t - 1
+    B = torch.empty(c, c, 3 * L, dtype=dtype, device=device)
+    for i in range(3):
+        for m in range(t):
+            Am = (psi[:, :, m] ** (i + 1)) * R[i][:, :, m]
+            B[:, :, i * L + (t - 1) + m] = coef[i] * Am
+            if m > 0:
+                B[:, :, i * L + (t - 1) - m] = coef[i] * Am.T
+            del Am
+    del R, psi
+    lagvec = torch.arange(-(t - 1), t, device=device, dtype=dtype).repeat(3)   # (3L,)
+    eye = torch.eye(c, dtype=cdt, device=device)
+    dgc = torch.diag_embed(diag_corr.to(cdt))
+
+    # ---- pass 2: stream f = 0..d/2, accumulating P and q over sample super-chunks ------
+    expl = 0.0
+    fc = max(1, int(freq_chunk)); NS = max(nb, int(super_chunk))
+    for f0 in range(0, dh, fc):
+        f1 = min(f0 + fc, dh); nf = f1 - f0
+        P = torch.zeros(nf, c, c, dtype=cdt, device=device)
+        q = torch.zeros(nf, c, dtype=cdt, device=device)
+        for ns0 in range(0, N, NS):
+            ns1 = min(ns0 + NS, N)
+            buf = torch.zeros(nf, ns1 - ns0, c, dtype=cdt, device=device)
+            for n0 in range(ns0, ns1, nb):
+                n1 = min(n0 + nb, ns1)
+                M, Phi, ph, G, sa = feats(n0, n1)
+                U = torch.fft.rfft(G - gmean.unsqueeze(1), dim=2)[:, :, f0:f1] / sq
+                buf[:, n0 - ns0:n1 - ns0, :] = U.permute(2, 1, 0)
+                del M, Phi, ph, G, U
+            P += buf.transpose(1, 2) @ buf.conj()
+            q += (buf.transpose(1, 2) @ vh[ns0:ns1, f0:f1].conj().T.unsqueeze(-1)).squeeze(-1)
+            del buf
+        P /= N; q /= N
+        fr = torch.arange(f0, f1, device=device, dtype=dtype)
+        ang = -2.0 * np.pi * torch.outer(fr, lagvec) / d                  # (nf, 3L)
+        Pv = torch.view_as_real(P)                                        # (nf, c, c, 2)
+        for part, trig in ((0, torch.cos), (1, torch.sin)):
+            Pv[..., part] += torch.einsum('fm,abm->fab', trig(ang), B) / d
+        del Pv
+        P += dgc.unsqueeze(0) + lam * eye.unsqueeze(0)
+        sol = torch.linalg.solve(P, q.unsqueeze(-1)).squeeze(-1)
+        term = torch.real(torch.sum(q.conj() * sol, dim=1))                # (nf,)
+        wgt = torch.where((fr == 0) | (fr == d // 2), 1.0, 2.0)
+        expl += float((term * wgt).sum())
+        del P, q, sol
+        if verbose:
+            print(f"    f {f1}/{dh}", flush=True)
+        torch.cuda.empty_cache()
+    return max(0.0, trace_p0 - expl)
+
+
+def selftest_lag2(seed=0, verbose=True):
+    """lag2 vs the K x K reference AND vs the original lag path, banded filters only."""
+    from core.rf_circulant import build_circulant_theta
+    from core.rf_circulant_torch import circulant_rf_mmse_t
+    dev = 'cuda' if torch.cuda.is_available() else 'cpu'
+    ok = True
+    for (d, c, N, sig, w) in ((8, 3, 400, 1.3, 3), (16, 4, 800, 1.0, 5),
+                              (16, 3, 800, 2.0, 2), (12, 24, 600, 0.7, 4),
+                              (8, 32, 400, 0.5, 3), (32, 8, 900, 1.1, 6)):
+        rng = np.random.default_rng(seed)
+        A = rng.standard_normal((d, d)) * 0.6
+        x0 = torch.tensor(rng.standard_normal((N, d)) @ A.T + 0.3, dtype=torch.float64,
+                          device=dev)
+        Theta = build_circulant_theta(c * d, d, np.random.default_rng(seed + 1), w=w)
+        hh = torch.tensor(np.stack([Theta[a * d] for a in range(c)]), dtype=torch.float64,
+                          device=dev)
+        U0 = torch.zeros(N, 1, dtype=torch.float64, device=dev)
+        G0 = torch.zeros(c * d, 1, dtype=torch.float64, device=dev)
+        ref = circulant_rf_mmse_t(x0, U0, Theta, G0, sig, 1e-6, conditional=False,
+                                  device=dev, dtype=torch.float64)
+        ref = float(ref['loss'] if isinstance(ref, dict) else ref)
+        old = circulant_rf_mmse_lag(x0, hh, sig, w, lam=1e-6, device=dev,
+                                    sample_chunk=7, freq_chunk=3)
+        new = circulant_rf_mmse_lag2(x0, hh, sig, w, lam=1e-6, device=dev,
+                                     sample_chunk=7, freq_chunk=3, super_chunk=13)
+        r1 = abs(new - ref) / max(abs(ref), 1e-12)
+        r2 = abs(new - old) / max(abs(old), 1e-12)
+        ok &= (r1 < 1e-9 and r2 < 1e-9)
+        if verbose:
+            print(f"  d={d:>3} c={c:>3} t={w} sigma={sig:<4}: ref={ref:.12f} "
+                  f"lag2={new:.12f}  rel(ref)={r1:.2e} rel(lag)={r2:.2e} "
+                  f"{'OK' if (r1 < 1e-9 and r2 < 1e-9) else 'FAIL'}")
+    return ok
