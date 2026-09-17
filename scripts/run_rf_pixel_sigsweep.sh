@@ -28,7 +28,9 @@ mkdir -p logs tables
 nvidia-smi -L
 # comma-valued vars MUST be set here, not via `sbatch --export` (sbatch splits on commas)
 export JS="${JS:-2,1,0.5}"
-export SIGS="${SIGS:-1.610,0.452,2.459,3.756,5.0,1.054,0.69}"
+# sigma=1.054 and 0.69 dropped at michimin's request (2026-09-16 21:25) -- the mid-range
+# fill-in is cancelled; the sweep extends upward only.
+export SIGS="${SIGS:-1.610,0.452,2.459,3.756,5.0}"
 export NSEED="${NSEED:-2}"
 export NSEED_CIRC="${NSEED_CIRC:-1}"
 echo "JS=${JS}  SIGS=${SIGS}  NSEED=${NSEED}  NSEED_CIRC=${NSEED_CIRC}"
