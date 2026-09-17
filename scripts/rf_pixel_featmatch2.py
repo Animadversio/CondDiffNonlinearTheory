@@ -37,6 +37,13 @@ JS = [float(x) for x in os.environ.get('JS', '0.5,1,2').split(',')]
 SIGS = [float(x) for x in os.environ.get('SIGS', '0.127,0.452,1.610').split(',')]
 NIMG = int(os.environ.get('NIMG', '10000'))
 NSEED = int(os.environ.get('NSEED', '2'))
+# Circulant seeds are budgeted separately: a circ cell costs 250-2561 s while a dense cell
+# costs 1-5 s, and the circulant SELF-AVERAGES -- measured seed spread is +-0.0017 (c=1536),
+# +-0.0004 (c=3072), +-0.0001 (c=6144), because c blocks x t taps is 12k-49k independent
+# random numbers.  (The "never quote a single-draw circulant number" rule was established at
+# c=2, i.e. 16 random numbers, and does not apply at these widths.)  Dense keeps NSEED
+# because its spread is real (+-0.15 at k/d=0.5) and it is free.
+NSEED_CIRC = int(os.environ.get('NSEED_CIRC', str(NSEED)))
 OUT = os.environ.get('OUT', 'tables/rf_pixel_featmatch2.npz')
 
 
@@ -66,7 +73,7 @@ def main():
     Xc = X - X.mean(0); ev = torch.linalg.eigvalsh((Xc.T @ Xc) / N)
     U = torch.zeros(N, 1, dtype=DT, device=DEV)
     print(f"FEATURE-MATCH raw pixels d={d} N={N} Tr(Sigma)={float(ev.sum()):.3f} t={T_BAND} "
-          f"seeds={NSEED}", flush=True)
+          f"seeds={NSEED} (circ {NSEED_CIRC})", flush=True)
 
     store = {}
     if os.path.exists(OUT):
@@ -98,7 +105,7 @@ def main():
                   f"+-{np.std(dv, ddof=1) if NSEED > 1 else 0:.4f}  [{td:.0f}s]", flush=True)
 
             cv = []
-            for s in range(NSEED):
+            for s in range(NSEED_CIRC):
                 t1 = time.time()
                 g = torch.Generator(device=DEV); g.manual_seed(800 + 11 * s + c)
                 h = torch.zeros(c, d, device=DEV, dtype=DT)
@@ -117,7 +124,7 @@ def main():
             np.savez(OUT, **store)
             print(f"  >> j={j}: dense(k={k}, {k*d:,} params) = {dm:.4f} | "
                   f"circ(c={c}, {c*d:,} rows, {c*d:,} params) = {cm:.4f}"
-                  f"+-{np.std(cv, ddof=1) if NSEED > 1 else 0:.4f}  ({cm-dm:+.4f})  "
+                  f"+-{np.std(cv, ddof=1) if NSEED_CIRC > 1 else 0:.4f}  ({cm-dm:+.4f})  "
                   f"linear={lin:.4f}", flush=True)
     print("\ndone", flush=True)
 
