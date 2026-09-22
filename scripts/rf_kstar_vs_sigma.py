@@ -31,7 +31,8 @@ Supersedes scripts/rf_kstar_for_dnn_experiment.py, in three ways.
    denoiser is asymptotically OPTIMAL (both L_lin and L_Bayes are d sigma^2 - O(sigma^4)),
    so there is asymptotically nothing for a nonlinear denoiser to close there.
 
-    python scripts/rf_kstar_vs_sigma.py
+    python scripts/rf_kstar_vs_sigma.py              # compute (GPU, a few min) + plot
+    REPLOT=1 python scripts/rf_kstar_vs_sigma.py     # redraw from the npz only (~1 s, no GPU)
 """
 
 import sys, os
@@ -57,6 +58,8 @@ TBL = {'CIFAR-10': 'tables/dnn_feature_mmse_cifar10_N10000_noise5_sigma30.npz',
 SIG_LO, SIG_HI = 0.02, 10.0          # window where the figure's gap lives
 NEFF_MIN = 2.0                       # posterior must spread over >=2 atoms to count as genuine
 N_SIG = int(os.environ.get('N_SIG', '12'))
+OUT_FIG = 'figures/rf_kstar_vs_sigma.png'
+OUT_TBL = 'tables/rf_kstar_vs_sigma.npz'
 
 
 def load(name):
@@ -154,8 +157,29 @@ def defect_curves(X, Theta, sigmas):
     return np.array(hat), np.array(chk), np.array(gmean)
 
 
-def main():
-    sigmas = np.exp(np.linspace(np.log(SIG_LO), np.log(SIG_HI), N_SIG))
+def from_npz(sigmas):
+    """Rebuild R from OUT_TBL instead of recomputing -- no GPU, ~1 s (REPLOT=1).
+
+    figures/ is gitignored, so the PNG is a build product that has to be reproducible from
+    committed data.  Everything the figure needs is either in OUT_TBL (defects, N_eff, the
+    memorisation cutoff) or in the dnn_feature_mmse tables it is plotted against, so nothing
+    has to be re-derived on a GPU to redraw it.
+    """
+    z = np.load(OUT_TBL, allow_pickle=True)
+    if not np.allclose(z['sigmas'], sigmas):
+        raise SystemExit(f"{OUT_TBL} holds a different sigma grid than N_SIG={N_SIG} / "
+                         f"SIG_LO={SIG_LO} / SIG_HI={SIG_HI} imply -- recompute instead.")
+    R = {}
+    for name in ('MNIST', 'CIFAR-10'):
+        tab = np.load(TBL[name], allow_pickle=True)
+        R[name] = dict(d=int(z[f'{name}_d']), sg_mem=float(z[f'{name}_sgmem']),
+                       neff=z[f'{name}_neff'], hat=z[f'{name}_hat'], chk=z[f'{name}_chk'],
+                       gam=z[f'{name}_gam'], tsig=tab['sigma'], lin=tab['linear_uncond'],
+                       bay=tab['bayes_uncond'])
+    return R
+
+
+def compute(sigmas):
     R = {}
     for name in ('MNIST', 'CIFAR-10'):
         tab = np.load(TBL[name], allow_pickle=True)
@@ -183,7 +207,10 @@ def main():
                        tsig=tab['sigma'], lin=tab['linear_uncond'], bay=tab['bayes_uncond'])
         del X, Theta; torch.cuda.empty_cache()
         print()
+    return R
 
+
+def make_figure(R, sigmas):
     plt.rcParams.update({'font.size': 12, 'axes.labelsize': 14, 'axes.titlesize': 14,
                          'xtick.labelsize': 12, 'ytick.labelsize': 12})
     fig, axes = plt.subplots(2, 2, figsize=(15.5, 9.2), sharex='col')
@@ -246,10 +273,18 @@ def main():
                  fontsize=13.5)
     fig.tight_layout(rect=[0, 0, 1, 0.915])
     os.makedirs('figures', exist_ok=True)
-    out = 'figures/rf_kstar_vs_sigma.png'
-    fig.savefig(out, dpi=150, bbox_inches='tight')
-    print(f"Saved {out}")
-    np.savez('tables/rf_kstar_vs_sigma.npz', sigmas=sigmas,
+    fig.savefig(OUT_FIG, dpi=150, bbox_inches='tight')
+    print(f"Saved {OUT_FIG}")
+
+
+def main():
+    sigmas = np.exp(np.linspace(np.log(SIG_LO), np.log(SIG_HI), N_SIG))
+    if os.environ.get('REPLOT'):
+        make_figure(from_npz(sigmas), sigmas)
+        return
+    R = compute(sigmas)
+    make_figure(R, sigmas)
+    np.savez(OUT_TBL, sigmas=sigmas,
              **{f'{k}_{q}': R[k][q] for k in R for q in ('hat', 'chk', 'gam')},
              **{f'{k}_d': R[k]['d'] for k in R},
              **{f'{k}_sgmem': R[k]['sg_mem'] for k in R},
