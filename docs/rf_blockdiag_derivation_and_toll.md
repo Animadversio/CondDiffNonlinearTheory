@@ -97,6 +97,46 @@ reason is worth stating because it generalises: **I looked for a symmetry and mi
 direct sum.** The normal equations decouple whenever the readout's parameter blocks touch
 disjoint output coordinates — equivariance is one way to get that, separability is another.
 
+### Validation, and two different "cross-covariances" that must not be conflated
+
+Raised 2026-09-22: *"the cross-variance of noise shouldn't be 0."* There are two distinct
+objects here and they behave oppositely.
+
+| | across chunks `j ≠ j'` | enters the optimum? |
+|---|---|---|
+| **feature** covariance `Cov(φ_{a,j}, φ_{b,j'})` | **nonzero** — `x0` is correlated across chunks | **no** |
+| **noise** covariance `σ²(Θ_a Θ_bᵀ)_{[j,j']}` | **exactly 0** — the blocks have disjoint support | n/a |
+
+The noise one is zero as an identity, not numerically: feature `(a,j,r)` sees only
+`Z[jb .. jb+b)` and feature `(b,j',r')` only `Z[j'b .. j'b+b)`, and those index sets are
+disjoint, so `σ² E[Z_j Z_{j'}ᵀ] = 0`. Verified to `0.000e+00` analytically.
+
+The feature one is genuinely nonzero and it is right to object to any claim otherwise — but
+it does not enter, because a block-diagonal `W` cannot use it. That is the same phenomenon
+as in the current model, where cross-frequency moments `E[φ̂_a[f] φ̂_b[g]*]`, `f≠g`, are
+large on CIFAR and never appear in `L^circ`. It is a property of the model, not of `p(x0)`.
+
+`SELFTEST=1 python scripts/rf_equivariance_toll.py` checks exactly this, on data built to
+have strong cross-chunk correlation and non-Gaussian marginals (`d=32, b=4, c=2`): it
+builds `Θ` explicitly, solves the structure-constrained least squares by brute force over
+all `c·M·b` readout taps plus a free per-coordinate bias, and compares.
+
+```
+max |cross-chunk FEATURE covariance|         = 0.101286      (nonzero -- real)
+max |cross-chunk NOISE covariance|, analytic = 0.000e+00     (exactly 0)
+brute-force constrained optimum              = 8.26177742778661
+formula Tr(Sig) - sum_{j,f} q^H P^-1 q       = 8.26177742778656
+abs diff                                     = 4.8e-14
+```
+
+So the formula is the exact optimum *with* those nonzero cross-chunk correlations present.
+
+If the intent is a model whose noise *does* couple across blocks, then the blocks must not
+have disjoint support — either overlapping windows (see the corollary below, which keeps
+the fast path), or the `b×b` blocks arranged **circulantly instead of only on the
+diagonal**. That second option is block-circulant-with-circulant-blocks, i.e. exactly a 2-D
+convolution, i.e. the group `Z_M × Z_b` — the same re-indexing recommended in §6.
+
 ### What is equivariance here, concretely
 
 `Θ` and `W` are *equivariant* for a shift `S` when `Θ S = S̃ Θ` and `W S̃ = S W` (`S̃` the

@@ -41,6 +41,7 @@ What is computed
 
     python scripts/rf_equivariance_toll.py            # table + tables/rf_equivariance_toll.npz
     NO_BAYES=1 python scripts/rf_equivariance_toll.py # skip the (slower) tiled Bayes floor
+    SELFTEST=1 python scripts/rf_equivariance_toll.py # brute-force check of the block-diag formula
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -145,7 +146,79 @@ def tiled_bayes(X, b, s, nt):
     return tot, float(np.median(neff))
 
 
+def selftest(dd=32, b=4, c=2, N=40000, sig=0.7, seed=0):
+    """Brute-force check of  L = Tr(Sig_p0) - sum_{j,f} q^H P^-1 q  for the model
+    'Theta = c blocks of dxd, each block-diagonal with bxb circulant blocks; W the same'.
+
+    Deliberately run on data with STRONG cross-chunk correlation and non-Gaussian
+    marginals, because the claim under test is precisely that cross-chunk feature moments
+    are nonzero yet do not enter the optimum.  Also reports the analytic noise
+    cross-covariance sig^2 (Theta_a Theta_b^T)_[j,j'], which IS exactly zero.
+    """
+    g = torch.Generator().manual_seed(seed)
+    M = dd // b
+    rows = (torch.arange(b)[:, None] - torch.arange(b)[None, :]) % b
+    A = torch.randn(dd, dd, dtype=torch.float64, generator=g)
+    Lc = torch.linalg.cholesky(A @ A.T / dd + 0.3)
+    x0 = (torch.randn(N, dd, dtype=torch.float64, generator=g) @ Lc.T) ** 2 * 0.4
+    x0 = x0 - x0.mean(0)
+    y = x0 + sig * torch.randn(N, dd, dtype=torch.float64, generator=g)
+    h = torch.randn(c, M, b, dtype=torch.float64, generator=g) / np.sqrt(b)
+    Th = torch.zeros(c, dd, dd, dtype=torch.float64)
+    for a in range(c):
+        for j in range(M):
+            Th[a, j*b:(j+1)*b, j*b:(j+1)*b] = h[a, j][rows]
+    phi = torch.relu(torch.einsum('aij,nj->nai', Th, y))
+
+    xch = max(float(((sig**2) * (Th[a] @ Th[bb].T))[j*b:(j+1)*b, jp*b:(jp+1)*b].abs().max())
+              for a in range(c) for bb in range(c)
+              for j in range(M) for jp in range(M) if j != jp)
+    P4 = (phi - phi.mean(0)).reshape(N, c, M, b)
+    fx = max(float(torch.einsum('na,nb->ab', P4[:, a, j], P4[:, bb, jp]).abs().max()) / N
+             for a in range(c) for bb in range(c)
+             for j in range(M) for jp in range(M) if j != jp)
+
+    cols = []
+    for a in range(c):
+        for j in range(M):
+            pj = phi[:, a, j*b:(j+1)*b]
+            for m in range(b):
+                col = torch.zeros(N, dd, dtype=torch.float64)
+                for r in range(b):
+                    col[:, j*b+r] = pj[:, (r-m) % b]
+                cols.append(col)
+    Xd = torch.stack(cols, -1)
+    Xd = Xd - Xd.mean(0)                                   # free per-coordinate bias
+    Gm = torch.einsum('ndp,ndq->pq', Xd, Xd) / N
+    rv = torch.einsum('ndp,nd->p', Xd, x0) / N
+    w = torch.linalg.solve(Gm, rv)
+    L_brute = float(((x0 - torch.einsum('ndp,p->nd', Xd, w)) ** 2).sum(1).mean())
+
+    Fb = torch.fft.fft(torch.eye(b, dtype=torch.complex128), dim=0) / np.sqrt(b)
+    red = 0.0
+    for j in range(M):
+        PH = torch.einsum('fr,ncr->ncf', Fb, phi[:, :, j*b:(j+1)*b].to(torch.complex128))
+        XH = torch.einsum('fr,nr->nf', Fb, x0[:, j*b:(j+1)*b].to(torch.complex128))
+        PH, XH = PH - PH.mean(0), XH - XH.mean(0)
+        for f in range(b):
+            Pm = torch.einsum('na,nb->ab', PH[:, :, f], PH[:, :, f].conj()) / N
+            q = torch.einsum('n,na->a', XH[:, f].conj(), PH[:, :, f]) / N
+            red += float((q.conj() @ torch.linalg.solve(Pm, q)).real)
+    L_form = float((x0 ** 2).sum(1).mean()) - red
+
+    print(f"SELFTEST  d={dd} b={b} c={c} N={N} sigma={sig}")
+    print(f"  max |cross-chunk FEATURE covariance|           = {fx:.6f}   (nonzero -- real)")
+    print(f"  max |cross-chunk NOISE covariance|, analytic   = {xch:.3e}   (exactly 0)")
+    print(f"  brute-force constrained optimum                = {L_brute:.14f}")
+    print(f"  formula Tr(Sig) - sum_j,f q^H P^-1 q           = {L_form:.14f}")
+    print(f"  abs diff                                       = {abs(L_brute-L_form):.3e}")
+    assert abs(L_brute - L_form) < 1e-9, "block-diagonal loss formula FAILED"
+    print("  OK: the nonzero cross-chunk feature moments do not enter the optimum.")
+
+
 def main():
+    if os.environ.get('SELFTEST'):
+        selftest(); return
     X, Xc, Sig, TR, lin = setup()
     store = {'sigmas': np.array(SIGS)}
     sg = lambda f: [f(s) for s in SIGS]
