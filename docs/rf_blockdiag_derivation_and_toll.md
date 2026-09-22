@@ -377,18 +377,76 @@ at `σ=1.61`, for 8× the readout parameters) and only collapses at `P = 1024` �
 across the three colour planes. The non-stationarity that matters is at the scale of the
 whole `32×32` image (objects centred, borders unlike interiors), not at any short period.
 The 2-D version behaves the same way (`p=1: +6.47`, `p=8: +4.83`, `p=16: +3.34`, `p=32: 0`
-at `σ=1.61`). **There is no cheap interior point on CIFAR: to remove the toll you have to
-break equivariance almost completely.**
+at `σ=1.61`). **Period-`P` has no cheap interior point on CIFAR.**
+
+### Retraction: that is a fact about period-`P`, not about the relaxation (2026-09-22)
+
+I originally wrote here that *"there is no cheap interior point on CIFAR: to remove the toll
+you have to break equivariance almost completely."* **That is wrong, and the table above is
+the reason I got it wrong** — it prices one axis and I generalised from it to the problem.
+
+Period-`P` is a **comb** in frequency: `A` commutes with `S^P`, so output frequency `f` reads
+inputs `f + j·(d/P)`. The smallest non-trivial step, `p=2` in 2-D, buys the modulation
+frequencies `{0,16}²` — the Nyquist checkerboard, which CIFAR has almost none of. That is why
+the curve is flat: the comb spends its first parameters on the modulations the data does not
+have. The non-stationarity that matters is smooth and whole-image, and the relaxation that
+matches it is a **band**, not a subgroup:
+
+```
+    A = Σ_{g ∈ G} diag(e_g) · BCCB(a_g),      e_g[u] = exp(2πi⟨g,u⟩/32)
+```
+
+Both families are this same expression with a different set `G` of allowed modulation
+frequencies — band-`B` takes `G = box(B)`, `|G| = (2B+1)²`, the *lowest* frequencies;
+period-`p` takes `G = sublattice(p)`, `|G| = p²`. **Both cost `9216·|G|` readout parameters**,
+so band-vs-comb is a controlled experiment in *which* modulations you buy, not how many. The
+fast path survives in both, and for a third reason: each parameter `a_g[h]` enters output
+frequency `h+g` and no other, so the normal equations partition by output frequency into 1024
+independent solves of size `3|G|` — no group required.
+
+Measured on CIFAR (`scripts/rf_band_relaxation.py`, michimin; independently
+`scripts/rf_band_relaxation_atlas.py`, mine — the two agree to `1.1e-13` on every cell).
+All rows are in the `Z_32 × Z_32` group with free 3-channel mixing, so the `B=0` / `p=1`
+baseline is `+0.889 / +3.082 / +6.469 / +7.782`, not the `Z_3072` row of the table above:
+
+```
+  class        |G|    W params   sg=0.127   sg=0.452   sg=1.610    sg=5.0   (excess over Wiener)
+  band  B=0      1       9,216     +0.889     +3.082     +6.469    +7.782   ( = period p=1)
+  band  B=1      9      82,944     +0.643     +2.094     +4.065    +3.592
+  band  B=2     25     230,400     +0.526     +1.615     +3.050    +2.513
+  band  B=3     49     451,584     +0.451     +1.303     +2.343    +1.824
+  band  B=4     81     746,496     +0.396     +1.081     +1.882    +1.433
+  period p=2     4      36,864     +0.838     +2.802     +6.262    +7.724
+  period p=4    16     147,456     +0.732     +2.433     +5.714    +7.508
+  period p=8    64     589,824     +0.611     +1.975     +4.827    +6.864
+  period p=16  256   2,359,296     +0.443     +1.376     +3.341    +5.372
+```
+
+The per-parameter comparison is the robust one: toll removed per `10⁶` readout parameters,
+band `B=1` versus comb `p=16`, is `16× / 16× / 22× / 49×` across the four `σ`. In *absolute*
+toll the band overtakes the comb from `B ≈ 2–4` — `B=4` beats `p=16` at `σ=1.610` and `5.0`
+with 3.2× fewer parameters, and `B=1` already beats it at `σ=5.0` with 28× fewer. (At
+`σ ≤ 1.61` the `B=1` row is still above `p=16` in absolute terms; it simply pays 1/28 of the
+price for it. Stating this the other way round would overclaim.)
+
+So there *is* a cheap interior point, and band `B=3` as a purely **linear** denoiser
+(`+2.343 / +1.824` at `σ=1.61 / 5.0`) already sits well below our **nonlinear**
+block-circulant RF's deficit (`+8.315 / +8.974`). The derivation, the surrogate calibration,
+and the falsification record are in `docs/rf_band_relaxation.md`.
 
 ---
 
 ## 6. Where this leaves the plan
 
 - **Do not build the tiled 8×8 model.** §3 — its floor is 7–66× worse than what we have.
-- **Do not build period-`P` expecting a win.** §5 — priced, and it is flat where it is
-  affordable. `P = 1024` at `c = 32` is the only cell that would move the needle
-  (block size `cP = 32768`, 3 coarse frequencies, ~52 GB) and it is barely a constraint
-  any more.
+- **Do not build period-`P` expecting a win — build the band instead.** §5 — period-`P` is
+  priced and flat where it is affordable (`P = 1024` at `c = 32` is the only cell that would
+  move the needle, block size `cP = 32768`, ~52 GB, and it is barely a constraint any more).
+  The band relaxation removes the same toll for 16–49× fewer parameters per unit of toll,
+  and it reaches the RF as *feature modulation*: set `ψ_{a,g} = e_g ⊙ φ_a` and leave the
+  block-circulant readout verbatim, since `ψ̂_{a,g}[f] = φ̂_a[f−g]` means output `f` reads
+  `φ̂_a[f−g]` with a coefficient indexed by `(f,g)` — exactly the band class. The
+  per-frequency block grows `c → c|G|`; no part of the Stein assembly is re-indexed.
 - **Do not build the free-`W` ablation.** It was my recommendation, and §5 supersedes it:
   it was a proxy for exactly this question, on a GMM, at `c ≤ 8`, and the direct
   measurement on raw pixels is better in every respect.
@@ -408,7 +466,8 @@ break equivariance almost completely.**
   re-indexing. The machinery is unchanged — every finite abelian group has a DFT; it is
   `rfft2` over a `(c, 3, 32, 32)` layout instead of `rfft` over `(c, 3072)`, with per-
   frequency blocks of size `3c` over `1024` frequencies. Much smaller change than any
-  redesign discussed so far, and it strictly improves the class.
+  redesign discussed so far, and it strictly improves the class. It is also the prerequisite
+  for the band: every band row above is measured inside this group, and `B=0` *is* it.
 
 ### Honest limits of §5
 
@@ -419,3 +478,15 @@ CIFAR at `d=3072` (`N_eff = 1`). So §5 is strong evidence, not a proof, that ta
 cannot close the gap. The argument it does license is quantitative: the required improvement
 in the nonlinear gain is ~1.1× at `σ=0.127` and ~50× at `σ=1.61`, and that is what makes the
 low-`σ` `t`-sweep the only version of the test worth running.
+
+**The band table above inherits one further untested assumption, and it is load-bearing.**
+Predicting what a *nonlinear* band-modulated RF would achieve means adding the RF's measured
+nonlinear gain (`9.173 − 8.029 = 1.144` at `σ=0.127`) to a linear class we have only priced
+linearly. That gain was measured against the `Z_3072` equivariant class. Enlarging the linear
+class generally *shrinks* the residual nonlinear gain, because the linear model absorbs part
+of what the nonlinearity was buying. Taken at face value the numbers predict the first
+outright win in this project — band `B=1` at `7.900 + 0.643 − 1.144 = 7.399` against Wiener's
+`7.900`, and plain `B=0` re-indexing already at `7.645` — but "at face value" is the whole
+assumption. The decisive experiment is the band-modulated nonlinear RF at small `c`
+(`c ≤ 256`; the circulant floors by `c ≈ 32`, so this is the right regime anyway), `B=1`,
+at `σ = 0.127` and `1.61`. Until that is run, the prediction is an extrapolation.
