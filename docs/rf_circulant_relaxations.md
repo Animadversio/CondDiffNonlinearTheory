@@ -67,6 +67,15 @@ offered on 2026-09-17 and still unbuilt.
 
 ## 2. Block-diagonal ≠ block-circulant
 
+> ⚠ **§2(b) below is WRONG — see `docs/rf_blockdiag_derivation_and_toll.md` (2026-09-22).**
+> A fresh 8×8 block at each diagonal position *does* have a fast path, and a cheaper one
+> than we run today: if `W` carries the same block structure, the normal equations decouple
+> across chunks by **direct sum** (disjoint output coordinates), with no group needed, then
+> by an 8-point DFT within each chunk. `M·b = d` solves of size `c×c` — the same count as
+> now. I looked for a symmetry and missed a separability. The model is still the wrong one
+> to build, but for a completely different reason (its readout receptive field collapses to
+> 8 pixels); §6's recommendation is superseded there too.
+
 "8×8 circulant blocks along the diagonal" splits into two very different models, and the
 distinction is the whole answer:
 
