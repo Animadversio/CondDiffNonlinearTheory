@@ -39,6 +39,21 @@ from .dnn_estimator import (
     wiener_filter_loss,
     wiener_filter_cond_loss,
 )
+from .conv_rf_mmse import (
+    make_random_conv_filters,
+    conv_rf_features,
+    multiscale_conv_rf_features,
+    dense_wiener_precompute,
+    dense_wiener_predict,
+    dense_wiener_loss_from_precomp,
+    accumulate_conv_rf_stats,
+    accumulate_dense_wiener_residual_stats,
+    accumulate_multiscale_dense_wiener_residual_stats,
+    accumulate_dense_wiener_residual_patch_stats,
+    mmse_from_conv_stats,
+    mmse_from_patch_stats,
+    conv_linear_mmse_fft,
+)
 
 __all__ = [
     # hermite
@@ -55,4 +70,14 @@ __all__ = [
     # metrics
     "mi_integrand", "mi_sigma_sweep",
     "explained_variance", "conditioning_gain_r2", "summarize_results",
+    # conv RF
+    "make_random_conv_filters", "conv_rf_features", "multiscale_conv_rf_features",
+    "dense_wiener_precompute", "dense_wiener_predict",
+    "dense_wiener_loss_from_precomp",
+    "accumulate_conv_rf_stats", "mmse_from_conv_stats",
+    "accumulate_dense_wiener_residual_stats",
+    "accumulate_multiscale_dense_wiener_residual_stats",
+    "accumulate_dense_wiener_residual_patch_stats",
+    "mmse_from_patch_stats",
+    "conv_linear_mmse_fft",
 ]

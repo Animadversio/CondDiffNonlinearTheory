@@ -32,7 +32,7 @@ for sg in SIGS:
             h=torch.zeros(c,d,device=DEV,dtype=DT)
             h[:,:T_BAND]=torch.randn(c,T_BAND,generator=g,device=DEV,dtype=DT)/np.sqrt(T_BAND)
             vals.append(circulant_rf_mmse_lag(X,h,sg,T_BAND,lam=LAM,device=DEV,
-                                              sample_chunk=16,freq_chunk=32))
+                                              sample_chunk=16,freq_chunk=int(os.environ.get("FC","8"))))
             print(f"    [seed {s_}: {time.time()-t0:.0f}s]",flush=True)
             del h; torch.cuda.empty_cache()
         v=np.array(vals)
