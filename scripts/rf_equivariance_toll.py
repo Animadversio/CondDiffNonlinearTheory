@@ -77,6 +77,21 @@ def tiled(Sig, TR, b, s):
     return float(torch.einsum('jii->', S) - torch.einsum('jab,jab->', A, S))
 
 
+def tiled_circ(Xc, TR, b, s):
+    """A block-diagonal with each b x b block itself CIRCULANT.
+
+    This is michimin's proposed model exactly -- Theta 8x8 circulant along the diagonal,
+    W the same structure -- in its linear shadow.  It is `tiled()` with the extra
+    within-chunk equivariance, so it is the TILED model's own equivariance toll, and it
+    must not be confused with the Z_3072 toll = period1d(P=1), which is the group OUR
+    current sliding full-width model uses.  Decouples twice: by direct sum across chunks
+    (disjoint output coords), then by a b-point DFT inside each chunk => scalar solves.
+    """
+    F = torch.fft.fft(Xc.reshape(Xc.shape[0], d // b, b), dim=2) / np.sqrt(b)
+    S = (F.abs() ** 2).mean(0)                                  # (M, b) real
+    return TR - float((S ** 2 / (S + s * s)).sum())
+
+
 def sliding(Sig, TR, w, s):
     off = torch.arange(w, device=DEV) - w // 2
     idx = (torch.arange(d, device=DEV)[:, None] + off[None, :]) % d
@@ -240,6 +255,16 @@ def main():
                                     for s, a, c in zip(SIGS, t_, sl)))
     print("  (third number = sliding - tiled: overlap's contribution alone)")
 
+    print(f"\n{'-'*96}\n1a. TILED with CIRCULANT blocks -- the proposed model exactly, and its OWN\n"
+          f"    equivariance toll.  NOT the Z_3072 toll (= period1d|1) that our sliding\n"
+          f"    full-width model pays.\n{'-'*96}\n{'b':>7} |" + hdr())
+    for b in (8, 16, 32):
+        tc = sg(lambda s: tiled_circ(Xc, TR, b, s)); store[f'tiled_circ|{b}'] = np.array(tc)
+        tf = store[f'tiled|{b}']
+        print(f"{b:>7} |" + "".join(f"{a:>10.3f}{a-lin[s]:>+7.3f} /{a-c:>+5.2f}"
+                                    for s, a, c in zip(SIGS, tc, tf)))
+    print("  (third number = cost of making each block circulant, on top of free blocks)")
+
     if not os.environ.get('NO_BAYES'):
         print(f"\n{'='*96}\n1b. BAYES floor of the tiled model, b=8 -- the best ANY nonlinear "
               f"tiled denoiser can do\n{'='*96}")
@@ -284,8 +309,20 @@ def main():
         print(f"{s:>7} {rf:>9.3f} {el:>13.3f} {el-lin[s]:>+8.3f} {rf-el:>+14.3f}   "
               f"{'nonlinearity buys ' + f'{el-rf:.2f}' + ' < toll ' + f'{el-lin[s]:.2f}'}")
     os.makedirs('tables', exist_ok=True)
+    # MERGE, never clobber: a partial run (NO_BAYES=1, a short SIGS) must not silently
+    # delete keys a previous full run computed.  Only keys recomputed now are overwritten,
+    # and only if the sigma grid matches -- otherwise the old rows are stale and must go.
+    if os.path.exists(OUT):
+        old = np.load(OUT)
+        if np.array_equal(old['sigmas'], store['sigmas']):
+            kept = [k for k in old.files if k not in store]
+            store = {**{k: old[k] for k in kept}, **store}
+            if kept:
+                print(f"\nmerged {len(kept)} key(s) from the previous run: {', '.join(kept)}")
+        else:
+            print(f"\nsigma grid changed -- previous {OUT} discarded, not merged")
     np.savez(OUT, **store)
-    print(f"\nwrote {OUT}")
+    print(f"wrote {OUT}  ({len(store)} keys)")
 
 
 if __name__ == '__main__':

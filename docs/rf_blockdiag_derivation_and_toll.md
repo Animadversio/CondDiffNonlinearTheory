@@ -310,6 +310,52 @@ So hypothesis (B) is confirmed and (A) is not the binding constraint. Tap renewa
 `Θ`; the toll is a property of `W`'s symmetry and is present at the exact optimum over
 every equivariant map, whatever `Θ` is.
 
+### Which model does "the toll" belong to? (asked 2026-09-22)
+
+**The regular circulant RF — the sliding, full-width model we currently run.** The table
+above is `period1d(P=1)`: the best linear `A` commuting with the cyclic shift on `Z_3072`.
+That is exactly the symmetry our `Θ` and `W` carry. No tiling enters it anywhere.
+
+This is what makes the subtraction meaningful. `relu` is pointwise, so it commutes with any
+shift; our whole predictor therefore satisfies `f(Sy) = S f(y)`. Our RF is a *nonlinear*
+member of the equivariant class and `period1d|1` is the best *linear* member of the **same**
+class — same group, same constraint, differing only in nonlinearity.
+
+The tiled model has its **own, separate, much larger** toll. Both are now computed, and they
+must not be conflated:
+
+```
+  linear denoiser class                 sg=0.127   sg=0.452   sg=1.610    sg=5.0
+  ------------------------------------  (excess over the free Wiener denoiser)
+  Z_3072 circulant          <- OURS       +1.273     +4.070     +8.473    +9.005
+  Z_32 x Z_32 + 3ch mixing                +0.889     +3.082     +6.469    +7.782
+  tiled b=8, FREE block                  +11.482    +53.621    +96.973   +58.556
+  tiled b=8, CIRCULANT block             +13.841    +55.383    +97.227   +58.584
+  ------------------------------------
+  tiled b=8 BAYES floor (nonlinear)       +8.612    +51.555    +97.636   +59.764
+  our block-circulant RF (nonlinear)      +0.129     +2.927     +8.315    +8.974
+```
+
+`tiled_circ|{8,16,32}` in the npz is the proposed model exactly — `Θ` an `8×8` circulant
+along the diagonal, `W` the same structure — in its linear shadow. It decouples twice: by
+direct sum across chunks, then by an 8-point DFT inside each, so it is `d` scalar solves.
+
+Two numbers, two questions:
+
+- **the `Z_3072` toll** (`+1.273 … +9.005`) explains why the model we *have* loses to linear;
+- **the tiled floor** (`+8.612 … +97.636`) explains why the model *proposed* would lose far
+  worse — an order of magnitude at low `σ`, and that is its *floor*, not its achieved loss.
+
+Note also that making each tiled block circulant costs a further `+2.36 / +1.76 / +0.25 /
++0.03` on top of free blocks at `b=8`: within an 8-coordinate window there is almost no
+translation structure left to exploit or to lose, so nearly the whole `+13.8` is the
+receptive field, not the weight sharing.
+
+⚠ At `σ = 1.61` the tiled *Bayes* row (`+97.636`) sits slightly **above** the tiled *linear*
+row (`+96.973`). Not a violation: the linear rows are exact while the Bayes row is a
+Monte-Carlo estimate over `10⁴` atoms, and `±0.7` is within its error there. The reading is
+unaffected — both are `≈97` against our `8.3`.
+
 **How much does relaxing the readout buy?** Let `A` commute with `S^P` (`P = 1` today,
 `P = d` free). This prices period-`P` sharing before any RF code is written:
 
