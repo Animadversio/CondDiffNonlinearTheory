@@ -59,9 +59,63 @@ A free `W ∈ R^{d×K}`, `K = cd`, has optimum `W = Cov(x0,φ) Σ_φ^{-1}`, and 
 
 So free `W` is not "slower" at the widths we run — it is impossible. But note the top of
 the table: **the free-`W` ablation is feasible on raw pixels for `c ≤ 8`, and awkward but
-possible at `c = 16`.** Since the circulant is already on its floor by `c ≈ 8–32`, that is
-not a toy regime — it is most of the way to the behaviour we care about. This is the probe
-offered on 2026-09-17 and still unbuilt.
+possible at `c = 16`.**
+
+> ⚠ **Correction (2026-09-22).** This paragraph used to continue *"since the circulant is
+> already on its floor by `c ≈ 8–32`, that is not a toy regime"*. That is a high-`σ`
+> statement and I wrote it as a general one. The sweep below settles it: the floor claim is
+> true at `σ ≥ 1.61` and false at `σ = 0.127`, which is the one place it was being used.
+
+**Where the block-circulant RF actually floors in `c`** — `scripts/run_rf_pixel_csweep.sh`
+→ `tables/rf_pixel_circ_csweep.npz`, job 47855859, 1 h 15 m, one code path
+(`circulant_rf_mmse_lag2`), 8 seeds at `c ≤ 256`, 4 at `c = 512`, 2 at `c = 1536`. Entries
+are the excess over the free Wiener denoiser, `mean ± sd` over seeds; `c = 3072, 6144` are
+the existing single-seed cells from `tables/rf_pixel_featmatch2.npz`:
+
+```
+  sigma     c=32        96         256        512       1536      3072    6144
+  0.127  +0.6213   +0.3891    +0.2907    +0.2338    +0.1772   +0.1504  +0.1294
+          0.0417    0.0152     0.0146     0.0057     0.0017
+  0.452  +3.5012   +3.2396    +3.0879    +3.0207    +2.9679   +2.9452  +2.9266
+          0.0342    0.0207     0.0175     0.0057     0.0016
+  1.610  +8.4030   +8.3627    +8.3404    +8.3292    +8.3199   +8.3170  +8.3151
+          0.0194    0.0088     0.0041     0.0008     0.0001
+  5.000  +9.0210   +8.9880    +8.9791    +8.9764    +8.9748   +8.9743  +8.9741
+          0.0093    0.0019     0.0006     0.0002     0.0000
+```
+
+Read it as a fraction of the quantity being explained, not in absolute loss. At `σ = 1.61`
+and `σ = 5.0` the `c = 32` value already sits within `1.1%` and `0.5%` of the `c = 6144`
+value — floored, and the original claim stands. At `σ = 0.127` it does not: `c = 32`
+overstates the final margin by `4.8×` (`+0.6213` against `+0.1294`), and even `c = 1536`
+overstates it by `37%`. A power-law tail fit `L(c) = L_∞ + A c^{-α}` on `c ≥ 256` (residuals
+at the seed-noise level) extrapolates to
+
+```
+  sigma    alpha    L_inf - Wiener    L(6144) - Wiener
+  0.127    0.411        +0.071            +0.129
+  0.452    0.590        +2.900            +2.927
+  1.610    0.739        +8.313            +8.315
+  5.000    1.032        +8.974            +8.974
+```
+
+so the margin at `σ = 0.127` is still roughly halving beyond the widest cell we have run,
+while at `σ ≥ 1.61` `c = 6144` is the asymptote to four decimals. **The circulant still does
+not cross the linear denoiser at any `σ`** — `L_∞ − L^lin = +0.071 > 0` — but the margin it
+must close at low `σ` is about half of what the `c = 6144` number suggests.
+
+Two consequences:
+
+- The free-`W` ablation at `c ≤ 8` is a toy regime *at low `σ`* after all. At `σ ≥ 1.61` it
+  is not. That probe (offered 2026-09-17, still unbuilt) was superseded anyway — see
+  `docs/rf_blockdiag_derivation_and_toll.md` §5.
+- For the band readout relaxation, which multiplies the per-frequency block by
+  `|G| = (2B+1)²`, the useful quantity is how much of the nonlinear gain a given `c` buys.
+  At `σ = 0.127`, against the equivariant-linear denoiser `9.173`: `c = 32` captures `57%`
+  of the `c = 6144` gain of `1.144`, `c = 96` `77%`, `c = 256` `86%`, `c = 512` `91%`,
+  `c = 1536` `96%`. So a band-vs-plain *differential* at `c = 256–512` captures most of the
+  effect and costs ~7 and ~25 min per seed; an *absolute* loss number at low `σ` does not
+  converge until `c ≳ 1536`, which at `|G| = 9` is ~7 h/seed.
 
 ---
 
@@ -137,8 +191,12 @@ Memory per coarse-frequency block is `16(cP)²` bytes; the Hermitian fold halves
 | 32 | 384 | 12,288 | 2.4 GB | `d/P = 8` freqs ⇒ 19 GB total; `t·P = d`, i.e. `Θ` random params matched to dense |
 | 64 | 384 | 24,576 | 9.7 GB | 77 GB total — the ceiling |
 
-`c=1536, P=8` is the informative cell: the circulant is long since floored at that `c`, so
-anything that moves is attributable to the relaxation and not to width.
+`c=1536, P=8` is the informative cell: at `σ ≥ 1.61` the circulant is floored to four
+decimals by `c = 1536` (§1), so anything that moves is attributable to the relaxation and
+not to width. At `σ = 0.127` that is *not* true — `c = 1536` still overstates the final
+margin by `37%` and the curve is falling `0.036` per doubling there — so a low-`σ` cell must
+be run against a plain-circulant baseline at the *same* `c`, as a differential, never read
+as an absolute loss.
 
 ---
 
