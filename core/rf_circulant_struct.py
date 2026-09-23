@@ -330,7 +330,7 @@ def circulant_rf_mmse_lag(x0, h, sigma, t_band, lam=1e-6, device='cuda',
 
 def circulant_rf_mmse_lag2(x0, h, sigma, t_band, lam=1e-6, device='cuda',
                            dtype=torch.float64, sample_chunk=None, freq_chunk=32,
-                           super_chunk=2048, verbose=False):
+                           super_chunk=2048, verbose=False, x0_test=None):
     """Same L^circ as `circulant_rf_mmse_lag`, restructured for speed.
 
     The old path recomputed the whole (c, N, d) feature tensor once per frequency chunk --
@@ -355,6 +355,27 @@ def circulant_rf_mmse_lag2(x0, h, sigma, t_band, lam=1e-6, device='cuda',
     4. FFT, NOT A DFT MATMUL.  u-hat was formed as an explicit (nf, d) x (c, nb, d) matmul
        costing c N d^2; rfft costs c N d log d.
 
+    HELD-OUT EVALUATION (`x0_test=`).  All of the above is IN-SAMPLE: w_f = P_f^{-1} q_f is
+    scored against the moments it was solved on.  Pass `x0_test` and w_f is kept and scored
+    against moments built from a disjoint split,
+
+        L_test = Tr(Sigma_test) + sum_f wgt_f [ -2 Re <q_f^test, w_f> + w_f^H P_f^test w_f ],
+
+    with the ridge appearing only in the solve.  The test moments are centred by the TRAIN
+    mean and the TRAIN feature mean, because the free per-position bias
+    beta = mu_train - W gmean_train is part of the model and re-centring on the test split
+    would refit d of its parameters at evaluation time; the returned quantity is therefore
+    E_test || x0 - W phi(y) - beta_train ||^2.  The test-side noise terms (lag Grams and the
+    exact-diagonal correction) ARE rebuilt on the test samples, since E_test[Cov(phi|x0)] is
+    a test-set expectation.  Only h, w_f and the two train means cross the split.
+
+    Returns a float as before, or a dict when `x0_test` is given.  Note that 'train' in that
+    dict is the ridge-shifted Tr(Sigma) - sum_f q^H (P + lam I)^{-1} q that every table in
+    this project holds, while 'train_resid' is the achieved residual of the same w_f that is
+    scored on test; they differ by exactly lam * ||W||^2, so 'test' - 'train_resid' is the
+    apples-to-apples generalisation gap.  See `core.rf_circulant2d` for the same machinery
+    on Z_32 x Z_32, where it is validated against a brute-force constrained least squares.
+
     Validated against `circulant_rf_mmse_lag` and the K x K reference by `selftest_lag2`.
     """
     x0 = x0.to(device=device, dtype=dtype); h = h.to(device=device, dtype=dtype)
@@ -369,11 +390,8 @@ def circulant_rf_mmse_lag2(x0, h, sigma, t_band, lam=1e-6, device='cuda',
         sample_chunk = max(1, min(N, int(2.0e9 / (c * d * 8))))
     nb = int(sample_chunk)
 
-    mu = x0.mean(0); X0c = x0 - mu
-    trace_p0 = float((X0c ** 2).sum() / max(N, 1))
-    Xr = torch.fft.rfft(x0, dim=1)                        # (N, dh)
+    mu = x0.mean(0)                               # TRAIN mean: centres both splits
     Hr = torch.fft.rfft(h, dim=1)                         # (c, dh)
-    vh = torch.fft.rfft(X0c, dim=1) / sq                  # (N, dh) == v[:, :dh]
     nrm = torch.linalg.norm(h, dim=1); s = sigma * nrm
 
     # psi on the non-negative lags only; psi(-m) = psi(m)^T
@@ -381,95 +399,143 @@ def circulant_rf_mmse_lag2(x0, h, sigma, t_band, lam=1e-6, device='cuda',
                        for m in range(t)], dim=-1)                        # (c, c, t)
     psi /= (nrm.view(-1, 1, 1) * nrm.view(1, -1, 1))
 
-    def feats(n0, n1):
-        M = torch.fft.irfft(Xr[n0:n1].unsqueeze(0) * Hr.conj().unsqueeze(1), n=d, dim=2)
+    def prep(xs):
+        xs = xs.to(device=device, dtype=dtype)
+        ns = xs.shape[0]
+        return {'Xr': torch.fft.rfft(xs, dim=1),                  # (ns, dh)
+                'vh': torch.fft.rfft(xs - mu, dim=1) / sq,        # (ns, dh)
+                'N': ns,
+                'trace': float(((xs - mu) ** 2).sum() / max(ns, 1))}
+
+    def feats(sp, n0, n1):
+        M = torch.fft.irfft(sp['Xr'][n0:n1].unsqueeze(0) * Hr.conj().unsqueeze(1),
+                            n=d, dim=2)
         sa = s.view(-1, 1, 1); z = M / sa
         Phi = _ndtr(z); ph = _npdf(z)
         G = M * Phi + sa * ph
         return M, Phi, ph, G, sa
 
-    # ---- pass 1: feature mean, exact-diagonal correction, and the t lag Grams ----------
-    gmean = torch.zeros(c, d, dtype=dtype, device=device)
-    R = [torch.zeros(c, c, t, dtype=dtype, device=device) for _ in range(3)]
-    diag_corr = torch.zeros(c, dtype=dtype, device=device)
-    for n0 in range(0, N, nb):
-        n1 = min(n0 + nb, N)
-        M, Phi, ph, G, sa = feats(n0, n1)
-        gmean += G.sum(1)
-        C = [sa * Phi, sa * ph / 2.0, -M * ph / 6.0]
-        de = ((M ** 2 + sa ** 2) * Phi + M * sa * ph - G ** 2).sum(1)
-        fo = (C[0] ** 2).sum(1) + 2.0 * (C[1] ** 2).sum(1) + 6.0 * (C[2] ** 2).sum(1)
-        diag_corr += (de - fo).sum(1) / d
-        del M, Phi, ph, G
-        for i in range(3):
-            flat = C[i].reshape(c, -1)
-            for m in range(t):
-                R[i][:, :, m].addmm_(torch.roll(C[i], -m, dims=2).reshape(c, -1), flat.T)
-        del C
-    gmean /= N
-    for i in range(3):
-        R[i] /= N
-    diag_corr /= N
-
-    # Noise lag tensor, REAL and contiguous in the lag axis, with the Hermite coefficients
-    # folded in and the negative lags materialised as transposes:
-    #     B[:, :, i*L + (t-1) + m] = coef_i * psi(m)^{i+1} o R_i(m),   B[..., -m] = that^T.
-    # Keeping it real and in ONE axis turns the whole noise assembly into two (c^2, 3L) x
-    # (3L, nf) matmuls per frequency chunk. The obvious alternative -- a Python loop over
-    # the 3L lags accumulating e^{-2pi i f m/d} * A_m into P -- allocates an (nf, c, c)
-    # COMPLEX temporary 45 times per chunk, which at c=6144 is 45 x 19 GB of memory traffic
-    # per chunk and is slower than the code this replaces.
     coef = (1.0, 2.0, 6.0)
     L = 2 * t - 1
-    B = torch.empty(c, c, 3 * L, dtype=dtype, device=device)
-    for i in range(3):
-        for m in range(t):
-            Am = (psi[:, :, m] ** (i + 1)) * R[i][:, :, m]
-            B[:, :, i * L + (t - 1) + m] = coef[i] * Am
-            if m > 0:
-                B[:, :, i * L + (t - 1) - m] = coef[i] * Am.T
-            del Am
-    del R, psi
+
+    # ---- pass 1: feature mean, exact-diagonal correction, and the t lag Grams ----------
+    def pass1(sp):
+        ns = sp['N']
+        gmean = torch.zeros(c, d, dtype=dtype, device=device)
+        R = [torch.zeros(c, c, t, dtype=dtype, device=device) for _ in range(3)]
+        diag_corr = torch.zeros(c, dtype=dtype, device=device)
+        for n0 in range(0, ns, nb):
+            n1 = min(n0 + nb, ns)
+            M, Phi, ph, G, sa = feats(sp, n0, n1)
+            gmean += G.sum(1)
+            C = [sa * Phi, sa * ph / 2.0, -M * ph / 6.0]
+            de = ((M ** 2 + sa ** 2) * Phi + M * sa * ph - G ** 2).sum(1)
+            fo = (C[0] ** 2).sum(1) + 2.0 * (C[1] ** 2).sum(1) + 6.0 * (C[2] ** 2).sum(1)
+            diag_corr += (de - fo).sum(1) / d
+            del M, Phi, ph, G
+            for i in range(3):
+                flat = C[i].reshape(c, -1)
+                for m in range(t):
+                    R[i][:, :, m].addmm_(torch.roll(C[i], -m, dims=2).reshape(c, -1), flat.T)
+            del C
+        gmean /= ns
+        for i in range(3):
+            R[i] /= ns
+        diag_corr /= ns
+
+        # Noise lag tensor, REAL and contiguous in the lag axis, with the Hermite
+        # coefficients folded in and the negative lags materialised as transposes:
+        #     B[:, :, i*L + (t-1) + m] = coef_i * psi(m)^{i+1} o R_i(m),  B[..., -m] = ^T.
+        # Keeping it real and in ONE axis turns the whole noise assembly into two (c^2, 3L)
+        # x (3L, nf) matmuls per frequency chunk. The obvious alternative -- a Python loop
+        # over the 3L lags accumulating e^{-2pi i f m/d} * A_m into P -- allocates an
+        # (nf, c, c) COMPLEX temporary 45 times per chunk, which at c=6144 is 45 x 19 GB of
+        # memory traffic per chunk and is slower than the code this replaces.
+        B = torch.empty(c, c, 3 * L, dtype=dtype, device=device)
+        for i in range(3):
+            for m in range(t):
+                Am = (psi[:, :, m] ** (i + 1)) * R[i][:, :, m]
+                B[:, :, i * L + (t - 1) + m] = coef[i] * Am
+                if m > 0:
+                    B[:, :, i * L + (t - 1) - m] = coef[i] * Am.T
+                del Am
+        del R
+        return gmean, B, torch.diag_embed(diag_corr.to(cdt))
+
+    tr_sp = prep(x0)
+    gmean, B_tr, dgc_tr = pass1(tr_sp)
+    te_sp = B_te = dgc_te = None
+    if x0_test is not None:
+        te_sp = prep(x0_test)
+        _, B_te, dgc_te = pass1(te_sp)        # gmean_test discarded: centring is train's
+
     lagvec = torch.arange(-(t - 1), t, device=device, dtype=dtype).repeat(3)   # (3L,)
     eye = torch.eye(c, dtype=cdt, device=device)
-    dgc = torch.diag_embed(diag_corr.to(cdt))
 
     # ---- pass 2: stream f = 0..d/2, accumulating P and q over sample super-chunks ------
-    expl = 0.0
-    fc = max(1, int(freq_chunk)); NS = max(nb, int(super_chunk))
-    for f0 in range(0, dh, fc):
-        f1 = min(f0 + fc, dh); nf = f1 - f0
+    NS = max(nb, int(super_chunk))
+
+    def moments(sp, B, dgc, f0, f1):
+        ns = sp['N']; nf = f1 - f0
         P = torch.zeros(nf, c, c, dtype=cdt, device=device)
         q = torch.zeros(nf, c, dtype=cdt, device=device)
-        for ns0 in range(0, N, NS):
-            ns1 = min(ns0 + NS, N)
+        for ns0 in range(0, ns, NS):
+            ns1 = min(ns0 + NS, ns)
             buf = torch.zeros(nf, ns1 - ns0, c, dtype=cdt, device=device)
             for n0 in range(ns0, ns1, nb):
                 n1 = min(n0 + nb, ns1)
-                M, Phi, ph, G, sa = feats(n0, n1)
+                M, Phi, ph, G, sa = feats(sp, n0, n1)
                 U = torch.fft.rfft(G - gmean.unsqueeze(1), dim=2)[:, :, f0:f1] / sq
                 buf[:, n0 - ns0:n1 - ns0, :] = U.permute(2, 1, 0)
                 del M, Phi, ph, G, U
             P += buf.transpose(1, 2) @ buf.conj()
-            q += (buf.transpose(1, 2) @ vh[ns0:ns1, f0:f1].conj().T.unsqueeze(-1)).squeeze(-1)
+            q += (buf.transpose(1, 2)
+                  @ sp['vh'][ns0:ns1, f0:f1].conj().T.unsqueeze(-1)).squeeze(-1)
             del buf
-        P /= N; q /= N
+        P /= ns; q /= ns
         fr = torch.arange(f0, f1, device=device, dtype=dtype)
         ang = -2.0 * np.pi * torch.outer(fr, lagvec) / d                  # (nf, 3L)
         Pv = torch.view_as_real(P)                                        # (nf, c, c, 2)
         for part, trig in ((0, torch.cos), (1, torch.sin)):
             Pv[..., part] += torch.einsum('fm,abm->fab', trig(ang), B) / d
         del Pv
-        P += dgc.unsqueeze(0) + lam * eye.unsqueeze(0)
-        sol = torch.linalg.solve(P, q.unsqueeze(-1)).squeeze(-1)
-        term = torch.real(torch.sum(q.conj() * sol, dim=1))                # (nf,)
+        P += dgc.unsqueeze(0)
+        return P, q
+
+    expl = 0.0
+    dev_train = 0.0
+    dev_test = 0.0
+    fc = max(1, int(freq_chunk))
+    for f0 in range(0, dh, fc):
+        f1 = min(f0 + fc, dh)
+        fr = torch.arange(f0, f1, device=device, dtype=dtype)
         wgt = torch.where((fr == 0) | (fr == d // 2), 1.0, 2.0)
-        expl += float((term * wgt).sum())
-        del P, q, sol
+        P, q = moments(tr_sp, B_tr, dgc_tr, f0, f1)
+        w = torch.linalg.solve(P + lam * eye.unsqueeze(0), q.unsqueeze(-1)).squeeze(-1)
+        cross = torch.real(torch.sum(q.conj() * w, dim=1))                # (nf,)
+        expl += float((cross * wgt).sum())
+        if te_sp is not None:
+            # achieved in-sample residual of this same w, against the UNRIDGED P
+            quad = torch.real(torch.sum(w.conj() * (P @ w.unsqueeze(-1)).squeeze(-1), dim=1))
+            dev_train += float(((quad - 2.0 * cross) * wgt).sum())
+            del quad
+            Pt, qt = moments(te_sp, B_te, dgc_te, f0, f1)
+            quad = torch.real(torch.sum(w.conj() * (Pt @ w.unsqueeze(-1)).squeeze(-1), dim=1))
+            crt = torch.real(torch.sum(qt.conj() * w, dim=1))
+            dev_test += float(((quad - 2.0 * crt) * wgt).sum())
+            del Pt, qt, quad, crt
+        del P, q, w, cross
         if verbose:
             print(f"    f {f1}/{dh}", flush=True)
-        torch.cuda.empty_cache()
-    return max(0.0, trace_p0 - expl)
+        if device != 'cpu':
+            torch.cuda.empty_cache()
+    train = max(0.0, tr_sp['trace'] - expl)
+    if te_sp is None:
+        return train
+    return {'train': train,
+            'train_resid': tr_sp['trace'] + dev_train,
+            'test': te_sp['trace'] + dev_test,
+            'trace_train': tr_sp['trace'], 'trace_test': te_sp['trace']}
 
 
 def selftest_lag2(seed=0, verbose=True):
@@ -504,4 +570,59 @@ def selftest_lag2(seed=0, verbose=True):
             print(f"  d={d:>3} c={c:>3} t={w} sigma={sig:<4}: ref={ref:.12f} "
                   f"lag2={new:.12f}  rel(ref)={r1:.2e} rel(lag)={r2:.2e} "
                   f"{'OK' if (r1 < 1e-9 and r2 < 1e-9) else 'FAIL'}")
+
+    # ---- held-out path -----------------------------------------------------------------
+    # Z_d is the group Z_d x Z_1 with one input channel, so the brute-force constrained
+    # least squares in core.rf_circulant2d -- an INDEPENDENT implementation that materialises
+    # the K x K covariance and optimises over an explicit real parameterization of the
+    # block-circulant readout -- is a valid reference for this path too, once x0 and h are
+    # viewed as (N, 1, d, 1) and (c, 1, d, 1).  It scores the TRAIN-solved readout against
+    # test moments, so it checks the centring convention and the -2Re<q,w> + w^H P w
+    # assembly, not just the train branch.
+    from core.rf_circulant2d import circulant2d_rf_mmse_bruteforce
+    if verbose:
+        print("  held-out vs the 2-D brute force (Z_d = Z_d x Z_1, Cin=1):")
+    for (d, c, N, sig, w) in ((8, 3, 400, 1.3, 3), (16, 4, 500, 1.0, 5), (12, 6, 600, 0.7, 4)):
+        rng = np.random.default_rng(seed + 9)
+        A = rng.standard_normal((d, d)) * 0.6
+
+        def draw(n, shift, scale):
+            z = rng.standard_normal((n, d)) + 0.4 * rng.standard_normal((n, 1))
+            return torch.tensor((z ** 3) / 3.0 @ A.T * scale + np.linspace(-1, 1, d) + shift,
+                                dtype=torch.float64, device=dev)
+
+        x0 = draw(N, 0.3, 1.0)
+        xt = draw(N // 2 + 31, -0.2, 1.2)        # genuinely different test moments
+        Theta = build_circulant_theta(c * d, d, np.random.default_rng(seed + 10), w=w)
+        hh = torch.tensor(np.stack([Theta[a * d] for a in range(c)]), dtype=torch.float64,
+                          device=dev)
+        new = circulant_rf_mmse_lag2(x0, hh, sig, w, lam=1e-6, device=dev, sample_chunk=7,
+                                     freq_chunk=3, super_chunk=13, x0_test=xt)
+        ref = circulant2d_rf_mmse_bruteforce(x0.reshape(N, 1, d, 1), hh.reshape(c, 1, d, 1),
+                                             sig, lam=1e-6, device=dev,
+                                             x0_test=xt.reshape(-1, 1, d, 1))
+        rel = {k: abs(new[k] - ref[k]) / max(abs(ref[k]), 1e-12)
+               for k in ('train', 'train_resid', 'test')}
+        good = max(rel.values()) < 1e-9
+        ok &= good
+        if verbose:
+            print(f"    d={d:>3} c={c:>3} t={w} sigma={sig:<4}: train {new['train']:.8f} "
+                  f"({rel['train']:.1e})  resid ({rel['train_resid']:.1e})  "
+                  f"test {new['test']:.8f} ({rel['test']:.1e})  "
+                  f"{'OK' if good else 'FAIL'}")
+
+    # sign/normalisation check independent of any reference: same split twice, lam = 0
+    rng = np.random.default_rng(seed + 17)
+    d, c, N, sig, w = 16, 3, 500, 0.9, 4
+    x0 = torch.tensor(rng.standard_normal((N, d)) * 1.3 + 0.2, dtype=torch.float64, device=dev)
+    Theta = build_circulant_theta(c * d, d, np.random.default_rng(seed + 18), w=w)
+    hh = torch.tensor(np.stack([Theta[a * d] for a in range(c)]), dtype=torch.float64,
+                      device=dev)
+    r = circulant_rf_mmse_lag2(x0, hh, sig, w, lam=0.0, device=dev, sample_chunk=11,
+                               freq_chunk=4, super_chunk=23, x0_test=x0)
+    rel = abs(r['test'] - r['train']) / max(abs(r['train']), 1e-12)
+    ok &= rel < 1e-9
+    if verbose:
+        print(f"    test==train, lam=0: train {r['train']:.10f}  test {r['test']:.10f}  "
+              f"rel={rel:.2e} {'OK' if rel < 1e-9 else 'FAIL'}")
     return ok
