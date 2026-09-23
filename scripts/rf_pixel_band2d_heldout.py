@@ -91,7 +91,17 @@ def main():
 
     for sg in SIGS:
         lin_tr, lin_te = linear_split(Xtr1, Xte1, sg)
-        store[f'linear|{sg}'] = np.array([lin_tr, lin_te])
+        lk = f'linear|{sg}'
+        if lk in store:
+            # linear_split has no RNG, so a rerun on the same splits MUST reproduce the
+            # stored value.  VERIFY rather than silently overwrite -- this is the same
+            # safety property merge_band2d_tables.py enforces across two jobs, and it is
+            # what catches the data (or the split) having changed underneath a resume.
+            dmax = float(np.max(np.abs(np.asarray(store[lk], float).ravel()
+                                       - np.array([lin_tr, lin_te]))))
+            assert dmax < 1e-9, f'{lk} does not reproduce stored value: max|d| = {dmax:.3e}'
+            print(f"  [{lk} reproduces stored value, max|delta| = {dmax:.1e}]", flush=True)
+        store[lk] = np.array([lin_tr, lin_te])
         print(f"\n=== sigma={sg}   Wiener train={lin_tr:.4f}  test={lin_te:.4f} ===",
               flush=True)
         for c in CS:
@@ -99,14 +109,24 @@ def main():
                 key = f'{sg}|{c}|{B}'
                 nG = (2 * B + 1) ** 2
                 npar = CIN * c * H * W * nG
-                if key in store:
-                    v = store[key]
-                    print(f"  B={B} c={c}: already done (train {np.mean(v[:, 0]):.4f}  "
-                          f"test {np.mean(v[:, 2]):.4f})", flush=True)
+                # RESUME AT SEED GRANULARITY, NOT CELL GRANULARITY.  Cells written by an
+                # earlier NSEED=1 run must be EXTENDABLE: raising NSEED has to APPEND the
+                # missing draws, not skip the cell because some row is present.  Rows are
+                # always seeds 0..n-1 in order, so `have` is exactly the number already done.
+                # With have==0 this is identical to the previous behaviour.
+                have = len(np.atleast_2d(store[key])) if key in store else 0
+                if have >= NSEED:
+                    v = np.atleast_2d(store[key])
+                    print(f"  B={B} c={c}: already done, {have} seed(s) "
+                          f"(train {np.mean(v[:, 0]):.4f}  test {np.mean(v[:, 2]):.4f})",
+                          flush=True)
                     continue
+                if have:
+                    print(f"  B={B} c={c}: {have} seed(s) present, adding {NSEED - have} "
+                          f"(seeds {have}..{NSEED - 1})", flush=True)
                 nf, ns = sizing(c, B)
-                rows = []
-                for s in range(NSEED):
+                rows = [list(r) for r in np.atleast_2d(store[key])] if have else []
+                for s in range(have, NSEED):
                     t1 = time.time()
                     r = circulant2d_band_rf_mmse(Xtr, filt2d(c, s), sg, T2, B, lam=LAM,
                                                  device=DEV, freq_chunk=nf, super_chunk=ns,
