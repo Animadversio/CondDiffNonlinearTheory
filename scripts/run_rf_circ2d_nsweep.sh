@@ -39,13 +39,19 @@ nvidia-smi -L
 
 SG=0.127,0.452
 
-for NI in 10000 20000 40000; do
+# N = 10000 IS NOT RUN HERE (michimin, 2026-09-23 00:40).  It is not a missing cell, it is a
+# DUPLICATE one: the 2-D N=10k points at c=512/1536 are already in tables/rf_pixel_circ2d.npz
+# from job 47890358, and the 1-D N=10k points at c=1536 are already in
+# tables/rf_pixel_circ_csweep.npz -- same drivers, same NIMG=10000, same seed scheme, so the
+# reruns reproduce them bit for bit rather than adding information.  The per-N tables are
+# seeded from those so the N-trend can still be assembled from one place.
+for NI in 20000 40000; do
   echo "############### N=${NI}  2-D Z_32xZ_32 ###############"
   OUT=tables/rf_circ2d_nsweep_${NI}.npz SIGS=$SG T2=3 NIMG=$NI CS=512,1536 NSEED=2 \
     /n/home12/binxuwang/.conda/envs/torch2/bin/python scripts/rf_pixel_circ2d.py
 done
 
-for NI in 10000 20000 40000; do
+for NI in 20000 40000; do
   echo "############### N=${NI}  1-D Z_3072 control ###############"
   OUT=tables/rf_circ1d_nsweep_${NI}.npz SIGS=$SG T_BAND=8 NIMG=$NI JS=0.5 \
     NSEED=1 NSEED_CIRC=1 \
