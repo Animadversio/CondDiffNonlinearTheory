@@ -150,10 +150,19 @@ def main():
              'linear': np.array([lin[s] for s in SIGS]),
              'trace': np.array([TR_tr, TR_te])}
 
-    prior = {}
+    # The prior in-sample tables are stored as one row per sigma ON THEIR OWN SIGMA GRID, so
+    # the reproduction check below has to match on the sigma VALUE, not on position.  Running
+    # a sigma the old table never had (e.g. 2.212) must skip that sigma, not silently compare
+    # it against the old table's first entry -- which is what a positional lookup does, and it
+    # fires a spurious assert of ~87 that looks like a real correctness failure.
+    prior, prior_sig = {}, {}
     for f in ('tables/rf_band_relaxation.npz', 'tables/rf_equivariance_toll.npz'):
         if os.path.exists(f):
-            prior.update(dict(np.load(f, allow_pickle=True)))
+            z = dict(np.load(f, allow_pickle=True))
+            sg = {float(v): i for i, v in enumerate(np.asarray(z.get('sigmas', [])).ravel())}
+            for k, v in z.items():
+                prior[k] = v
+                prior_sig[k] = sg
 
     hdr = "".join(f"{f'sg={s}':>26}" for s in SIGS)
     print(f"{'model':>22} {'W params':>10} |{hdr}")
@@ -168,9 +177,14 @@ def main():
         print(f"{lab:>22} {npar:>10,} |"
               + "".join(f"{vals[s][0]-lin[s][0]:>+11.4f}{vals[s][1]-lin[s][1]:>+11.4f}{'':>4}"
                         for s in SIGS))
-        old = prior.get(key.replace('_ho', ''))
+        pk = key.replace('_ho', '')
+        old = prior.get(pk)
         if old is not None:
-            dv = max(abs(float(old[i]) - vals[s][0]) for i, s in enumerate(SIGS))
+            sg = prior_sig.get(pk, {})
+            shared = [(sg[s], s) for s in SIGS if s in sg]
+            if not shared:
+                return None                       # sigma not in the old grid: nothing to check
+            dv = max(abs(float(old[i]) - vals[s][0]) for i, s in shared)
             assert dv < TOL, f"{key} train column does not reproduce the in-sample table: {dv}"
             return dv
         return None
