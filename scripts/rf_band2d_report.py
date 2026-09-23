@@ -21,9 +21,11 @@ THREE INDEXING TRAPS THIS FILE EXISTS TO AVOID.
       Theta draws.  The plain table has 2 seeds at some cells and the band table has 1, so we
       truncate BOTH to min(len) -- averaging all of plain against one band seed would mix a
       paired differential with an unpaired seed-mean difference.
-  (3) While two concurrent jobs are filling B=2, its cells live in TWO npz files (the driver
-      cannot share one -- see scripts/merge_band2d_tables.py).  We read both, and refuse to
-      let a duplicate key differ silently.
+  (3) Concurrent jobs CANNOT share one output npz (the driver rewrites the whole dict after
+      every cell -- see scripts/merge_band2d_tables.py), so a run in progress has its cells
+      split across two files.  We read every file in BANDS and refuse to let a duplicate key
+      differ silently.  The B=2 side-table has since been merged into the canonical one and
+      deleted; the second entry is kept so the next split run needs no code change.
 """
 import numpy as np, os, sys
 
