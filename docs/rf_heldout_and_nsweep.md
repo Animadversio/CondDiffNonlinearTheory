@@ -238,6 +238,189 @@ changes none of the conclusions below.
 
 ---
 
+### 4.4 Dense, held out — the retraction is low-σ only, and it is total there
+
+`scripts/rf_pixel_dense_heldout.py` → `tables/rf_pixel_dense_heldout.npz`. Same estimator as
+§2 with `Θ` dense instead of circulant, same 10,000/10,000 split, same seeds as
+`scripts/rf_pixel_dense_sweep.py` so the train column reproduces the stored in-sample table —
+asserted in the driver, all ~40 cells agree to ≤ 8.5e-14. Regenerate with
+`SECTIONS=I python scripts/rf_heldout_report.py`.
+
+Excess over the **held-out** Wiener (test vs test, so the §7.1 trace offset cancels):
+
+```
+      sigma  Wiener_te   k/d=0.5     k/d=1     k/d=2     k/d=3     k/d=4     k/d=6     k/d=8
+      0.127     8.3590  +12.1400   +6.2130   +2.6062   +1.7072   +1.5707   +1.8286   +2.2017
+      0.452    29.1278  +18.5053   +9.0933   +3.3897   +1.8647   +1.3379   +1.0381   +1.0088
+      0.621    37.5906  +20.6602  +10.1674   +3.8614   +2.1250   +1.4620   +0.9837   +0.8365
+      0.853    47.5825  +23.0247  +11.4122   +4.4481   +2.4842   +1.6866   +1.0410   +0.7874
+      1.172    59.2034  +25.4797  +12.7735   +5.1068   +2.9059   +1.9802   +1.1856   +0.8427
+      1.610    72.4610  +27.7732  +14.1258   +5.7716   +3.3398   +2.2979   +1.3765   +0.9627
+      2.212    87.2797  +29.5389  +15.2824   +6.3603   +3.7294   +2.5909   +1.5686   +1.1017
+      5.000   129.9680  +27.7075  +15.4605   +6.7649   +4.0638   +2.8746   +1.7870   +1.2825
+```
+
+**The sign flips at low σ.** In sample, dense beats Wiener from `k/d ≈ 3` at σ = 0.127 and the
+margin grows to −1.80 at `k/d = 8`. Held out it never beats it at *any* σ or width, and past
+`k/d = 4` the held-out curve turns back **upward** — the in-sample curve is monotone
+decreasing, so that turnaround is overfitting and nothing else:
+
+```
+      sigma=0.127   in-sample (vs W)        held out (vs W)
+        k/d=2     8.9337  (+1.0340)     10.9652  (+2.6062)
+        k/d=3     7.6580  (-0.2416)     10.0662  (+1.7072)
+        k/d=4     7.0811  (-0.8186)      9.9297  (+1.5707)
+        k/d=6     6.4806  (-1.4191)     10.1875  (+1.8286)
+        k/d=8     6.0986  (-1.8010)     10.5607  (+2.2017)
+```
+
+Dense's own gap reaches **+4.47** at σ = 0.127, `k/d = 8`, against Wiener's +0.459 and the 2-D
+circulant's +0.097. At σ ≥ 1.61 the dense arm is nearly honest (own gap +0.08…+0.37) and the
+two columns agree to ~0.1 — the same shape as the circulant retraction in §4.1.
+
+**⇒ the ranking inverts at σ = 0.127.** All fitted on the same 10,000, scored on the same
+10,000:
+
+```
+      IN-SAMPLE                          HELD OUT
+       6.0986  dense k/d=8   75.5M        6.7469  2-D circ c=3072   9.4M
+       6.4806  dense k/d=6   56.6M        6.9302  2-D circ c=1536   4.7M
+       6.6525  2-D circ c=3072            8.1174  1-D circ c=1536   4.7M
+       6.8592  2-D circ c=1536            8.3590  Wiener            4.7M
+       7.0811  dense k/d=4   37.7M        9.9297  dense k/d=4      37.7M
+       7.8997  Wiener                    10.1875  dense k/d=6      56.6M
+       8.0768  1-D circ c=1536           10.5607  dense k/d=8      75.5M
+```
+
+Parameter counts are trained readout parameters: `3c·1024` (2-D), `c·d` (1-D), `k·d` (dense),
+`d(d+1)/2` for Wiener (`Σ` and hence `A = Σ(Σ+σ²I)⁻¹` are symmetric).
+
+⚠ The in-sample `2-D c=3072` figure above is `6.6525`, while
+`tables/rf_pixel_circ2d.npz` stores `6.6462` for the same cell. **Not a discrepancy** — the
+held-out job ran 2 seeds there and the `c`-sweep stored 1, and the shared seed agrees to the
+digit (`6.64621868` vs `6.6462`). Same at σ = 0.452: 2-seed mean `28.3311` against the stored
+single seed `28.3361`, whose partner in the held-out table is `28.33609238`. The driver's
+reproduction assert compares the overlapping seeds, which is why it passes at 0.0.
+
+⚠ **This retracts the dense-vs-circulant crossing at low σ** (`SECTIONS=J`; `k/d` at which
+dense first reaches the circulant's `c = 1536` loss). The in-sample column below reproduces
+the published 2.67 / 2.00 / 1.63 / 1.70 through a different code path:
+
+```
+      sigma |            vs 1-D circ |            vs 2-D circ
+            |    in-samp    held-out |    in-samp    held-out
+      0.127 |       2.63       never |       4.65       never
+      0.452 |       1.99        2.61 |       4.35       never
+      0.621 |       1.86        2.05 |       2.94        4.40
+      0.853 |       1.75        1.86 |       2.38        2.69
+       1.61 |       1.63        1.67 |       1.97        2.06
+        5.0 |       1.70        1.72 |       1.88        1.92
+```
+
+At high σ the crossing survives almost unmoved — nothing on either side is overfitting there,
+so holding out moves both columns together. At σ = 0.127 it **ceases to exist**: dense's best
+width (`k/d = 4`, 37.7M trained parameters) is beaten by both circulant arms *and* by Wiener at
+once, while the 2-D arm does it with a quarter as many parameters. So *"dense overtakes
+circulant at matched free parameters"* is a **high-σ statement**; at low σ it was an artefact
+of scoring the arm with 75M free parameters on the 10,000 images it was fitted on.
+
+### 4.5 EDM, the first non-memorising nonlinear reference
+
+`scripts/edm_pixel_heldout.py` → `tables/edm_pixel_heldout.npz`, ~48 s/σ,
+`SECTIONS=K python scripts/rf_heldout_report.py`. EDM works in `[-1,1]`, so
+`σ_edm = 2 σ_pixel` and the output is mapped back before the error is taken ⇒ identical units
+to every `L` above. (The 2026-08-17 warning against overlaying EDM applies to the `d = 512`
+avgpool representation; both sides here are raw pixels.) `±` is the MC standard error over
+full 10,000-image sweeps — the noise is sampled here, not integrated analytically.
+
+⚠⚠ **EDM saw all 50,000 CIFAR train images**, so this is the analogue of §4.3, not of anything
+in §5. Its "train" column evaluates the frozen network on 10,000 images that *are* in its
+training set, which makes train-vs-test a direct measurement of how much a real diffusion
+model memorises, on the same footing as Wiener's +0.459.
+
+```
+      sigma  train(seen)  test(unseen)   memo gap  Wiener_te  vs Wiener
+      0.127       4.3522        4.5978    +0.2455     8.3590    -3.7612
+      0.452      18.4125       19.8846    +1.4721    29.1278    -9.2432
+      0.621      25.9109       27.6391    +1.7282    37.5906    -9.9515
+      0.853      35.8933       37.6530    +1.7597    47.5825    -9.9295
+      1.172      48.7034       50.1016    +1.3982    59.2034    -9.1018
+       1.61      63.8984       64.8161    +0.9177    72.4610    -7.6449
+      2.212      81.0578       81.4763    +0.4185    87.2797    -5.8034
+        5.0     128.6751      128.2340    -0.4411   129.9680    -1.7340
+```
+
+`uncond-vp` agrees with `uncond-ve` to ~0.001 at every σ — two independently trained networks
+with different noise schedules, same MSE to four decimals.
+
+**⇒ EDM's own memorisation gap exceeds Wiener's over most of the grid**, peaking at +1.76 at
+σ ≈ 0.85 against Wiener's +0.465 there. A trained diffusion model memorises its training set
+more than a 4.7M-parameter Gaussian fit does — measured, not assumed. And it is a *lower*
+bound: the train column is 10,000 of the 50,000 images it saw. The σ = 5.0 value of −0.441 is
+the §7.1 trace offset, matching Wiener's −0.334 at the same σ.
+
+**⇒ this resolves the 2026-08-10 open question.** The `oracle Bayes` curve in
+`figures/dnn_feature_mmse_*.png` was retracted because the posterior effective support was
+`N_eff = 1.00` for every σ ≤ 1.61 at `N = 10⁴` — a nearest-neighbour lookup, not a Bayes
+estimator — which left us with no way to see where the linear↔nonlinear gap actually lives.
+EDM gives it, and the answer is that the gap is **small at low σ**, consistent with linear
+being asymptotically optimal as σ → 0 and opposite to what the retracted curve showed.
+
+### 4.6 All classes on one axis
+
+`scripts/rf_heldout_plot.py` → `figures/rf_heldout_vs_sigma.png` (regenerates from the npz in
+~1 s, no GPU; `REBUILD_LIN50=1` recomputes `tables/rf_linear50k_heldout.npz`). Numbers from
+`SECTIONS=L python scripts/rf_heldout_report.py`. Baseline is linear fitted on all 50,000 —
+the §4.3 handicap, chosen here because it needs no floor, no extrapolation and no trace
+normalisation. Each class at its best measured width:
+
+```
+      sigma     lin50 |    dense      1-D      2-D    lin10      EDM   (excess over lin50)
+      0.127    8.1739 |  +1.7558  -0.0565  -1.4270  +0.1851  -3.5761
+      0.452   28.8946 |  +1.2420  +2.6278  -0.4999  +0.2333  -9.0100
+      0.621   37.3716 |  +1.0555  +3.9701  +1.5692  +0.2190  -9.7325
+      0.853   47.3850 |  +0.9849  +5.3972  +3.2121  +0.1975  -9.7320
+      1.172   59.0316 |  +1.0145  +6.8136  +4.5802  +0.1718  -8.9300
+       1.61   72.3163 |  +1.1074  +8.0581  +5.6713  +0.1447  -7.5002
+      2.212   87.1615 |  +1.2199      ---      ---      ---  -5.6852
+        5.0  129.9070 |  +1.3435  +8.6894  +7.3304  +0.0610  -1.6730
+```
+
+⚠ The width is a min taken **on the test set**, a mild selection bias. It matters only near the
+dense minimum at low σ, where the curve is flat; the circulant arms are still monotone in `c`
+over the widths measured.
+
+**(a) The 2-D arm crosses linear(50k) at σ ≈ 0.488** — inside the octave between 0.452 and
+0.621 in which nothing had been measured. Robust to the `c = 3072` cells still missing there:
+at σ = 0.452 the `c = 1536 → 3072` step is worth −0.49, and applying that whole step to the
+0.621 point still only moves the crossing to ≈0.50.
+
+**(b) The dense curve is flat and never crosses**: +1.76 at σ = 0.127, a shallow minimum of
++0.98 near σ = 0.85, +1.34 at σ = 5.0. Over a 40× range in σ, held-out dense sits a
+near-constant ~1 above the linear denoiser. It is not a low-σ story or a high-σ story.
+
+**(c) ⚠ We do best where the prize is smallest.** Fraction of the linear(50k) → EDM gap closed:
+
+```
+      sigma      gap |    dense      1-D      2-D
+      0.127    3.576 |   -49.1%     1.6%    39.9%
+      0.452    9.010 |   -13.8%   -29.2%     5.5%
+      0.621    9.732 |   -10.8%   -40.8%   -16.1%
+      0.853    9.732 |   -10.1%   -55.5%   -33.0%
+      1.172    8.930 |   -11.4%   -76.3%   -51.3%
+       1.61    7.500 |   -14.8%  -107.4%   -75.6%
+        5.0    1.673 |   -80.3%  -519.4%  -438.2%
+```
+
+The nonlinear gain actually available over linear peaks at σ ≈ 0.62–0.85 (9.73) and is only
+3.58 at σ = 0.127. The 2-D arm captures 40% of it at σ = 0.127 — where there is least to
+capture — 5.5% at σ = 0.452, and is net-negative from σ = 0.621 on. **The one genuine win this
+project has is in the regime the gap curve says is least interesting, and no class we have
+tested touches the peak.** This is a statement about the model classes, not about held-out
+versus in-sample.
+
+---
+
 ## 5. What the results support, scoped
 
 **Everything in this section is matched: every model — both RF arms and the Wiener baseline —
@@ -383,8 +566,12 @@ at large σ a trace difference between two sample sets propagates ~1:1 into the 
 
 | what | how |
 |---|---|
-| all tables in this doc | `python scripts/rf_heldout_report.py` (~60 s, CPU; sections A–G) |
+| all tables in this doc | `python scripts/rf_heldout_report.py` (~60 s, CPU; sections A–G, I–L) |
 | the RF direction test of §7.1 | `SWAP=1 SECTIONS=H python scripts/rf_heldout_report.py` (GPU, ~2 min) |
+| the dense held-out run (§4.4) | `python scripts/rf_pixel_dense_heldout.py` → `tables/rf_pixel_dense_heldout.npz` (GPU, ~10 s/cell, 30 GB peak at `k/d = 8`) |
+| its self-test | `SELFTEST=1 python scripts/rf_pixel_dense_heldout.py` (closed form vs MC, and the `λ = 0` single-split collapse) |
+| the EDM run (§4.5) | `python scripts/edm_pixel_heldout.py` → `tables/edm_pixel_heldout.npz` (GPU, ~48 s/σ/net) |
+| the summary figure (§4.6) | `python scripts/rf_heldout_plot.py` → `figures/rf_heldout_vs_sigma.png` (~1 s, CPU) |
 | the held-out run, σ = 0.127/0.452/1.61/5.0 | `sbatch scripts/run_rf_heldout.sh` → `tables/rf_pixel_heldout.npz` (job 47897466, 3 h 29 m) |
 | the held-out run, σ = 0.621/0.853/1.172/2.212 | `sbatch scripts/run_rf_heldout_sig2.sh` → same table (job 47923736, in flight) |
 | the `N`-sweep | `sbatch scripts/run_rf_circ2d_nsweep.sh` → `tables/rf_circ{2d,1d}_nsweep_*.npz` (job 47894575, 1 h 36 m) |
@@ -399,8 +586,12 @@ relative to the in-sample drivers.
 
 ## 9. Open
 
-* Dense at `k/d ≤ 8` (`tables/rf_pixel_dense_sweep.npz`) is still **in-sample only**. Those
-  numbers need the same held-out correction before they can be compared against anything here.
+* ~~Dense at `k/d ≤ 8` is still in-sample only.~~ **Done — §4.4.** The correction was larger
+  than for either circulant arm and it reverses the low-σ crossing entirely.
+* **No class we have tested captures the nonlinear gain where it is largest** (§4.6c). The
+  linear → EDM gap peaks at σ ≈ 0.62–0.85; every RF arm is net-negative against linear(50k)
+  there. This is the sharpest open question these tables raise, and it is about model classes,
+  not about estimation.
 * The band-modulated nonlinear RF differential at `c = 256` and `512` — still the decisive test
   of whether the nonlinear gain transfers to a larger linear class (see
   `docs/rf_band_relaxation.md` §5 and `docs/rf_blockdiag_derivation_and_toll.md`). Note the
