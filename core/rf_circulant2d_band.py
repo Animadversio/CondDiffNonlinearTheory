@@ -515,11 +515,22 @@ def selftest_band(seed=0, verbose=True, device=None):
     dev = device or ('cuda' if torch.cuda.is_available() else 'cpu')
     ok = True
 
+    # *** THE GRID MUST BE AT LEAST 2B+1 IN EACH DIMENSION. ***  box(B) offsets are taken mod
+    # (H, Wd), so on a grid smaller than 2B+1 two distinct s_r alias onto the SAME modulation,
+    # the design goes rank-deficient and the ridge -- not the algebra -- decides the answer.
+    # That would make a brute-force agreement meaningless rather than failing loudly, so the
+    # B=3 cases below run at 7x7 and 8x8, not at the 4x4/5x5 used for B=1 and B=2.
     cases = ((4, 4, 2, 2, 2, 400, 1.1, 1),
              (4, 4, 3, 2, 2, 400, 0.6, 1),
              (6, 4, 2, 2, 2, 400, 1.5, 1),
              (6, 6, 1, 2, 2, 400, 0.9, 1),
-             (5, 5, 1, 2, 2, 300, 0.9, 2))
+             (5, 5, 1, 2, 2, 300, 0.9, 2),
+    # ⚠ AND THE BRUTE FORCE COSTS Cin*c*nR*D x c*nR*D x d DOUBLES FOR ITS BASIS TENSOR `E`,
+    # i.e. it grows like B^4 c^2 Cin D^2.  At B=3 that is 9 GB for (7,7,Cin=1,c=2) and 80 GB
+    # for (8,8,Cin=2,c=2) -- the reference OOMs long before the estimator would.  Keep the
+    # Cin>1 B=3 case at c=1 so it costs the same as the Cin=1 c=2 one.
+             (7, 7, 1, 2, 2, 300, 0.9, 3),
+             (7, 7, 2, 1, 2, 300, 1.2, 3))
     for (H, Wd, Cin, c, t, N, sig, B) in cases:
         rng = np.random.default_rng(seed)
         d = Cin * H * Wd
