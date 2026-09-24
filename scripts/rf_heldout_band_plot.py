@@ -55,15 +55,17 @@ D = load('tables/rf_pixel_dense_heldout.npz')    # dense, `{sigma}|{k/d}|dense`,
                                                  # string ('8.0', not '8') -- check before
                                                  # indexing, the spelling differs from every
                                                  # other table in the project.
+O = load('tables/bayes_oracle_heldout.npz')      # empirical-prior Bayes, `oracle|{sigma}` =
+                                                 # [test, se, in_sample, N_eff_te, N_eff_tr]
 
 sig = np.array(SIGS)
-W, EDM, EDMSE, P2, B1, B2, DN = ({} for _ in range(7))
+W, EDM, EDMSE, P2, B1, B2, DN, BO, BO50 = ({} for _ in range(9))
 NS = {}
 for s in SIGS:
     w = get(H, 'linear|{}', s)
-    # The SAME Wiener row is stored in all four tables (linear_split has no RNG).  Verify
+    # The SAME Wiener row is stored in all five tables (linear_split has no RNG).  Verify
     # rather than assume -- a mismatch would mean the splits moved underneath one of them.
-    for tag, z in (('band', B), ('edm', E), ('dense', D)):
+    for tag, z in (('band', B), ('edm', E), ('dense', D), ('oracle', O)):
         o = get(z, 'linear|{}', s)
         assert o is None or abs(o[1] - w[1]) < 1e-9, f'{tag} linear|{s} disagrees: {o} vs {w}'
     e = get(E, 'uncond-ve|{}', s)
@@ -71,10 +73,16 @@ for s in SIGS:
     b1 = np.atleast_2d(get(B, '{}|512|1', s))
     b2 = np.atleast_2d(get(B, '{}|512|2', s))
     dn = np.atleast_2d(get(D, '{}|8.0|dense', s))
+    bo = get(O, 'oracle|{}', s)
+    BO50[s] = get(O, 'oracle50|{}', s)[0]
     W[s], EDM[s], EDMSE[s] = w[1], e[2], e[3]
     P2[s], B1[s], B2[s] = p[:, 2].mean(), b1[:, 2].mean(), b2[:, 2].mean()
     DN[s] = dn[:, 2].mean()
+    BO[s] = bo[0]
     NS[s] = (len(p), len(b1), len(b2), len(dn))
+
+NNSQ = float(O['nn_sq_test_to_train'][0])     # mean squared nearest-neighbour distance,
+NNSQ50 = float(O['nn_sq_test_to_train50'][0])  # test -> train = the sigma->0 limit of BO
 
 series = [
     ('linear (Wiener), held out', W,   '#444444', 'o', '-',  2.0),
@@ -85,6 +93,13 @@ series = [
     ('band RF  c=512  B=2',       B2,  '#9467bd', 'v', '-',  1.8),
 ]
 
+# *** THE EMPIRICAL-PRIOR BAYES ORACLE GOES ON THE LEFT PANEL ONLY, AND THAT IS A DELIBERATE
+# CHOICE, NOT AN OVERSIGHT. ***  Its excess over linear runs +91.8 -> +0.9, while every other
+# curve on the right panel lives inside +-11; putting it there would compress the six curves
+# the panel exists to separate into a single line.  Its two endpoints are annotated on the
+# right instead, and the full column is printed below.
+ORACLE = ('Bayes under the empirical 10k-train prior', BO, '#8c564b', 'X', (0, (4, 2)), 2.0)
+
 print(' sigma   W_test    EDM_te  (se)  dense k/d=8   2D c=3072   B=1 c=512   B=2 c=512'
       '   seeds(2D,B1,B2,dense)')
 for s in SIGS:
@@ -93,7 +108,33 @@ for s in SIGS:
 print('\n excess over the HELD-OUT Wiener (negative = beats linear on the same 10k images):')
 for s in SIGS:
     print(f' {s:5.3f}  EDM {EDM[s]-W[s]:+8.4f}   dense {DN[s]-W[s]:+8.4f}   '
-          f'2D {P2[s]-W[s]:+8.4f}   B=1 {B1[s]-W[s]:+8.4f}   B=2 {B2[s]-W[s]:+8.4f}')
+          f'2D {P2[s]-W[s]:+8.4f}   B=1 {B1[s]-W[s]:+8.4f}   B=2 {B2[s]-W[s]:+8.4f}'
+          f'   | oracle {BO[s]-W[s]:+9.4f}')
+
+# *** WHY ONLY THE HELD-OUT ORACLE IS PLOTTABLE. ***  The in-sample column is the retracted
+# `bayes_uncond` curve of figures/dnn_feature_mmse_*.png: its atoms ARE its targets, so at
+# small sigma the posterior is a point mass on the image that generated y and the loss is
+# literally 0.  N_eff = exp(H(w)) is 1.00 in BOTH columns at low sigma -- the difference is
+# that in sample that single atom is the right answer and held out it is the wrong one.
+print('\n the empirical-prior Bayes oracle, and why the in-sample version is not on the plot:')
+print(f'  sigma   held out   vs Wiener |   IN SAMPLE   N_eff(test)  N_eff(train)')
+for s in SIGS:
+    bo = get(O, 'oracle|{}', s)
+    print(f'  {s:5.3f} {bo[0]:10.4f} {bo[0]-W[s]:+10.4f} | {bo[2]:11.4f} {bo[3]:12.2f} '
+          f'{bo[4]:13.2f}')
+print(f'  => the held-out curve flattens onto the mean squared NN distance {NNSQ:.4f} as '
+      f'sigma->0 (sigma=0.127 gives {BO[SIGS[0]]:.4f}, agreeing to {abs(BO[SIGS[0]]-NNSQ):.4f})')
+
+# *** EDM vs ITS OWN MATCHED-PRIOR ORACLE.  This is the strongest single statement the oracle
+# curve licenses, and it runs the OPPOSITE way to the worry it was built to test. ***  EDM saw
+# all 50k, so the 50k-atom oracle is exactly "what a model that reproduced its training prior
+# perfectly would score on these test images".  EDM beats it by more than an order of
+# magnitude at low sigma => whatever EDM is doing, it is not reproducing its empirical prior.
+print('\n EDM vs the 50k-atom oracle matched to its own training set:')
+print('  sigma   EDM_test   oracle50    ratio   | oracle10k   Wiener')
+for s in SIGS:
+    print(f'  {s:5.3f} {EDM[s]:10.4f} {BO50[s]:10.4f} {BO50[s]/EDM[s]:8.2f}x | '
+          f'{BO[s]:10.4f} {W[s]:8.4f}')
 
 # *** k/d=8 IS DENSE AT ITS WORST WIDTH AT LOW sigma. ***  Held out, dense is NON-MONOTONE in
 # k (in sample it is monotone -- that turnaround IS the overfitting), with a minimum at
@@ -119,9 +160,23 @@ def crossing(d):
 
 fig, ax = plt.subplots(1, 2, figsize=(13.2, 5.2))
 
+lab, d, col, mk, ls, lw = ORACLE
+ax[0].annotate(f'$\\sigma\\to0$ limit of each = mean sq. nearest-neighbour\n'
+               f'distance to its atom set: {NNSQ:.1f} (10k) / {NNSQ50:.1f} (50k).\n'
+               f'5$\\times$ the atoms buys {100*(NNSQ-NNSQ50)/NNSQ:.0f}% at d=3072.',
+               (0.13, NNSQ), xytext=(0, 8), textcoords='offset points',
+               fontsize=7.2, color=col, va='bottom')
+ax[0].plot(sig, [BO50[s] for s in SIGS], color=col, ls=':', lw=1.4, alpha=0.85,
+           label='   same, 50k-train prior (matched to EDM)')
+ax[0].plot(sig, [d[s] for s in SIGS], color=col, ls=ls, marker=mk, ms=5, lw=lw, label=lab)
+
 for lab, d, col, mk, ls, lw in series:
     y = [d[s] for s in SIGS]
-    ax[0].plot(sig, y, ls, color=col, marker=mk, ms=5, lw=lw, label=lab)
+    # NO label on the left panel -- the six model curves are identical in colour and marker on
+    # both panels, so one legend (on the right, where there is empty space below the zero line)
+    # serves both.  A second copy here had to sit on top of the sigma=0.5-1.2 octave, which is
+    # exactly the part of the left panel worth looking at.
+    ax[0].plot(sig, y, ls, color=col, marker=mk, ms=5, lw=lw)
     ax[1].plot(sig, [d[s] - W[s] for s in SIGS], ls, color=col, marker=mk, ms=5, lw=lw,
                label=lab)
 
@@ -130,7 +185,9 @@ ax[0].set_xlabel(r'pixel noise $\sigma$')
 ax[0].set_ylabel(r'held-out loss  $\mathbb{E}\,\|x_0-\hat{x}_0\|^2$')
 ax[0].set_title('raw held-out loss vs noise\n(all fitted on 10k train, scored on the 10k CIFAR test set)',
                 fontsize=10)
-ax[0].legend(fontsize=8.5, loc='upper left')
+ax[0].legend(fontsize=8.0, loc='lower right',
+             title='the six model curves are labelled on the right panel',
+             title_fontsize=7.5)
 ax[0].grid(alpha=0.3)
 
 ax[1].axhline(0, color='#444444', lw=2)
@@ -141,22 +198,33 @@ ax[1].set_title('excess over the held-out linear denoiser\n(same test set both s
                 'train/test trace offset cancels)', fontsize=10)
 ax[1].grid(alpha=0.3)
 ax[1].axhspan(-11, 0, color='#2ca02c', alpha=0.05, zorder=0)
-ax[1].set_ylim(-11, 8.6)
+# Headroom above the highest curve (+7.27) is deliberate: the three crossing labels sit in it
+# so they clear both the curves and the off-scale oracle note below them.
+YLO, YHI = -11.0, 11.4
+ax[1].set_ylim(YLO, YHI)
 # Crossing markers, staggered in y so the three labels (0.503 / 0.523 / 0.571) do not
 # collide -- they are within 14% of each other in sigma.
 for i, (lab, d, col, mk, ls, lw) in enumerate(series[1:]):
     xc = crossing(d)
     if xc is None:
         continue
-    ax[1].axvline(xc, color=col, ls=':', lw=1.1, alpha=0.8, ymax=0.62)
+    ylab = 10.6 - 0.95 * i
+    ax[1].axvline(xc, color=col, ls=':', lw=1.1, alpha=0.8,
+                  ymax=(ylab - YLO) / (YHI - YLO))
     short = {'plain 2-D RF  c=3072': 'plain 2-D c=3072',
              'band RF  c=512  B=1': 'band c=512 B=1',
              'band RF  c=512  B=2': 'band c=512 B=2'}.get(lab, lab)
     ax[1].annotate(f'{short} crosses at $\\sigma$={xc:.3f}',
-                   (xc, 7.4 - 0.95 * i), xytext=(8, 0), textcoords='offset points',
+                   (xc, ylab), xytext=(8, 0), textcoords='offset points',
                    ha='left', va='center', fontsize=7.5, color=col, zorder=6,
                    bbox=dict(fc='white', ec='none', alpha=0.85, pad=1.2))
 ax[1].annotate('RF beats held-out linear', (0.128, -10.4), fontsize=8.5, color='#2ca02c')
+ax[1].annotate(f'empirical-prior Bayes is OFF SCALE here:\n'
+               f'{BO[SIGS[0]]-W[SIGS[0]]:+.1f} at $\\sigma$={SIGS[0]}  $\\to$  '
+               f'{BO[SIGS[-1]]-W[SIGS[-1]]:+.1f} at $\\sigma$={SIGS[-1]:g}  '
+               f'(never below 0)',
+               (0.128, 5.1), fontsize=7.6, color=ORACLE[2],
+               bbox=dict(fc='white', ec=ORACLE[2], alpha=0.85, lw=0.6, pad=2.0))
 ax[1].legend(fontsize=8.5, loc='lower right')
 
 fig.suptitle('Held-out denoising loss vs noise level, CIFAR-10 raw pixels '
