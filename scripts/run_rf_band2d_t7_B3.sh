@@ -14,8 +14,9 @@
 # michimin, 2026-09-24 19:11: "run c=512 B=3 at kxk=7 at noise sigma 1.61 and
 # 2.21 only".
 #
-# *** c=512 IS NOT RUNNABLE AND THIS SCRIPT RUNS c=256 INSTEAD.  DO NOT SUBMIT
-# IT UNTIL michimin HAS SAID WHICH c THEY WANT. ***  At B=3 the Delta index set
+# *** c=512 IS NOT RUNNABLE.  michimin WAS GIVEN THE SIZING AND THE FEASIBLE
+# FRONTIER AND CHOSE c=256 AT 19:32 ("sure run c=256 at 7x7 B=3") -- SUBMITTED
+# ON THAT REPLY, NOT BEFORE. ***  At B=3 the Delta index set
 # doubles relative to B=2 (nD = ((4B+1)^2+1)/2 = 41 -> 85), and 7x7 B=2 c=512
 # was ALREADY the "-- none --" row of run_rf_band2d_t5_B2.sh's sizing table:
 #
