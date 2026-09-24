@@ -590,7 +590,22 @@ def selftest_band(seed=0, verbose=True, device=None):
     # This case is added before the T2=5 B=2 CIFAR sweep (michimin, 2026-09-23 23:48), which
     # is the first production cell with both knobs off their defaults.
     # The grid must clear BOTH rules: >= 2B+1 = 5 and >= 2t-1 = 7, so 7x7 with t=4, B=2.
-             (7, 7, 1, 1, 4, 300, 1.0, 2))
+             (7, 7, 1, 1, 4, 300, 1.0, 2),
+    # *** AND THE SAME ARGUMENT PUSHES THE CORNER ONE MORE STEP: the case above is the ONLY
+    # B x t interaction point, and it sits at (B=2, t=4).  Any 7x7 CIFAR cell at B=3 runs
+    # (B=3, t=7) -- further off default on BOTH knobs than anything the brute force has ever
+    # seen.  This case moves the interaction to (B=3, t=4), i.e. it exercises the B index set
+    # of the Delta-resolved Gram at the larger band order while the lag index set is still
+    # non-trivial.  Grid clears both rules: >= 2B+1 = 7 and >= 2t-1 = 7, so 7x7.
+    #
+    # ⚠⚠ (B=3, t=7) ITSELF CANNOT BE BRUTE-FORCED AND THAT IS A HARD LIMIT, NOT A CHOICE.
+    # The 2t-1 rule forces the grid to 13x13, and E is (Cin*c*nR*D) x (c*nR*D) x d doubles
+    # with nR = (2B+1)^2 = 49 and D = 169, so even at Cin = c = 1 it is 8281 x 8281 x 169
+    # x 8 B = *86 GiB* -- the reference OOMs long before the estimator would (the estimator
+    # at that size is trivial).  So the t=7 axis is validated at B=1 (13x13 case above), the
+    # B=3 axis at t=2 and t=4, and the far corner is covered by those three, NOT directly.
+    # SAY THIS when reporting a 7x7 B=3 production number rather than implying full coverage.
+             (7, 7, 1, 1, 4, 300, 0.8, 3))
     for (H, Wd, Cin, c, t, N, sig, B) in cases:
         rng = np.random.default_rng(seed)
         d = Cin * H * Wd
