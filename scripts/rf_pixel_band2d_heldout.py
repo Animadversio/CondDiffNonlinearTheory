@@ -55,6 +55,29 @@ OUT = os.environ.get('OUT', 'tables/rf_pixel_band2d_heldout.npz')
 PLAIN = 'tables/rf_pixel_heldout.npz'
 
 
+def cell_key(sg, c, B):
+    """`{sigma}|{c}|{B}` at the default 3x3 taps, `{sigma}|{c}|{B}|t{T2}` otherwise.
+
+    *** THE TAP SIZE HAS TO BE IN THE KEY AND UNTIL 2026-09-23 IT WAS NOT. ***  T2 is a knob
+    that changes the MODEL (it is the width of the random window each feature sees) while
+    leaving the cell's (sigma, c, B) coordinates alone, so with the old key a T2=7 run pointed
+    at the canonical table would have done one of two silently wrong things:
+
+      * with NSEED=1, seen `have >= NSEED` for every stored 3x3 cell, printed "already done"
+        and EXITED 0 HAVING COMPUTED NOTHING -- a success-shaped no-op;
+      * with NSEED=2, APPENDED a 7x7 draw as "seed 1" of a 3x3 cell, so every mean over that
+        cell would average two different models and the row count would still look right.
+
+    Neither fails loudly.  This is the same error family as the cell-vs-seed resume bug fixed
+    earlier the same day: a resume rule is only as safe as the identity encoded in its key.
+
+    T2=3 keeps the bare key ON PURPOSE.  27 cells are already stored under it and
+    scripts/rf_band2d_report.py and scripts/merge_band2d_tables.py both parse it; suffixing
+    those too would orphan the lot for no gain.  Only the new arm is namespaced.
+    """
+    return f'{sg}|{c}|{B}' if T2 == 3 else f'{sg}|{c}|{B}|t{T2}'
+
+
 def sizing(c, B):
     """Pick freq_chunk / super_chunk from a GPU budget.
 
@@ -78,8 +101,14 @@ def sizing(c, B):
 def main():
     Xtr = load(True, NIMG)
     Xte = load(False, NTEST)
+    # T2 is printed from the PLAIN driver's module global, not from this one's, because that
+    # is the copy `filt2d` actually closes over -- if the two ever disagreed the filters would
+    # be drawn at one tap size and the lag assembly done at another.
+    from scripts import rf_pixel_heldout as _ph
+    assert _ph.T2 == T2, f'tap size disagrees: filt2d uses {_ph.T2}, this driver uses {T2}'
     print(f"BAND-MODULATED NONLINEAR RF, held out.  train={Xtr.shape[0]}  test={Xte.shape[0]}"
-          f"  c={CS}  B={BS}  seeds={NSEED}", flush=True)
+          f"  c={CS}  B={BS}  taps={T2}x{T2} ({CIN*T2*T2} px per feature)  seeds={NSEED}"
+          f"  -> {OUT}", flush=True)
     Xtr1 = Xtr.reshape(Xtr.shape[0], d)
     Xte1 = Xte.reshape(Xte.shape[0], d)
 
@@ -106,7 +135,7 @@ def main():
               flush=True)
         for c in CS:
             for B in BS:
-                key = f'{sg}|{c}|{B}'
+                key = cell_key(sg, c, B)
                 nG = (2 * B + 1) ** 2
                 npar = CIN * c * H * W * nG
                 # RESUME AT SEED GRANULARITY, NOT CELL GRANULARITY.  Cells written by an
@@ -148,7 +177,19 @@ def main():
                       f"own gap {te_m-float(a[:, 1].mean()):+.4f}", flush=True)
 
                 # PAIRED DIFFERENTIAL against the plain 2-D arm on the SAME filters.
-                p = plain.get(f'{sg}|{c}|2d')
+                # ⚠ ONLY AT T2=3.  tables/rf_pixel_heldout.npz was generated at the default
+                # 3x3 taps throughout, and `filt2d(c, s)` draws randn(c, CIN, T2, T2) -- at a
+                # different T2 the same seed yields a DIFFERENT filter tensor (the draws are
+                # not even nested, since the row stride changes).  Differencing a 7x7 band
+                # against a 3x3 plain arm would silently turn a paired differential into a
+                # difference of two independent Theta draws AND confound the band with the
+                # window size.  The B=0 regression assert below is invalid for the same
+                # reason -- at T2!=3 the plain arm is a different model, not the same one.
+                p = plain.get(f'{sg}|{c}|2d') if T2 == 3 else None
+                if T2 != 3:
+                    print(f"     [no paired differential: the plain table is 3x3 and this is "
+                          f"{T2}x{T2}.  Compare against B={B} c={c} at T2=3 instead.]",
+                          flush=True)
                 if p is not None:
                     n = min(len(p), len(a))
                     dte = float(np.mean(a[:n, 2] - np.asarray(p)[:n, 2]))

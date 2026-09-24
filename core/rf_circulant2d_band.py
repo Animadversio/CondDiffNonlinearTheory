@@ -530,7 +530,25 @@ def selftest_band(seed=0, verbose=True, device=None):
     # for (8,8,Cin=2,c=2) -- the reference OOMs long before the estimator would.  Keep the
     # Cin>1 B=3 case at c=1 so it costs the same as the Cin=1 c=2 one.
              (7, 7, 1, 2, 2, 300, 0.9, 3),
-             (7, 7, 2, 1, 2, 300, 1.2, 3))
+             (7, 7, 2, 1, 2, 300, 1.2, 3),
+    # *** AND THE GRID MUST ALSO BE AT LEAST 2t-1 IN EACH DIMENSION, FOR THE SAME REASON ON
+    # THE OTHER INDEX. ***  The lag set is m in [-(t-1), t-1]^2 taken mod (H, Wd), so on a
+    # grid smaller than 2t-1 two distinct lags alias and the Delta-resolved Stein Gram
+    # double-counts.  `circulant2d_band_rf_mmse` raises on that (see the 2t-1 <= min(H,W)
+    # check), which is why the two cases below run at 13x13 and 7x7 rather than reusing the
+    # small grids above.
+    #
+    # ⚠ EVERY CASE ABOVE RUNS AT t=2.  Until 2026-09-23 the brute force had NEVER exercised a
+    # tap size larger than that, so the lag machinery was validated only at its smallest
+    # non-trivial setting -- exactly the hole B=3 was in before the two 7x7 cases were added.
+    # These two close it before the T2=7 CIFAR sweep (michimin, 2026-09-23 22:30: "is a
+    # 27-dimensional window enough for a useful nonlinear feature").  t=7 on 13x13 is the
+    # tightest possible case: the lag span is exactly the grid, so any off-by-one in the
+    # wraparound shows up as a hard disagreement rather than as a small bias.
+    # E costs 3.1 GB at (13,13,Cin=1,c=1,B=1) and 1.2 GB at (7,7,Cin=2,c=2,B=1); the c and Cin
+    # are kept small for that reason, NOT because large t is expensive (t does not enter E).
+             (13, 13, 1, 1, 7, 300, 0.9, 1),
+             (7, 7, 2, 2, 4, 300, 1.2, 1))
     for (H, Wd, Cin, c, t, N, sig, B) in cases:
         rng = np.random.default_rng(seed)
         d = Cin * H * Wd
