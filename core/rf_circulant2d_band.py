@@ -237,8 +237,13 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
         ns = sp['N']
         gmean = torch.zeros(c, D, dtype=dtype, device=device)
         dsum = torch.zeros(c, D, dtype=dtype, device=device)
-        Tre = torch.zeros(nD, 3, nl, c, c, dtype=dtype, device=device)
-        Tim = torch.zeros(nD, 3, nl, c, c, dtype=dtype, device=device)
+        # ONE TENSOR PER Delta REPRESENTATIVE, not one (nD, 3, nl, c, c) block, so that a
+        # slice can be RELEASED the moment its Bc slice is built (see the assembly below).
+        # Delta = (0,0) has no imaginary part at all -- (C_i o e_0) is real -- so its Tim
+        # slab is never written and is not allocated.
+        Tre = [torch.zeros(3, nl, c, c, dtype=dtype, device=device) for _ in range(nD)]
+        Tim = [None if dreps[dI] == (0, 0) else
+               torch.zeros(3, nl, c, c, dtype=dtype, device=device) for dI in range(nD)]
         for n0 in range(0, ns, nb1):
             n1 = min(n0 + nb1, ns)
             M, Phi, ph, G, sa = feats(sp, n0, n1)
@@ -262,32 +267,54 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
                         Ar = (C[i] * dcos[dI]).reshape(c, -1)
                         Ai = (C[i] * dsin[dI]).reshape(c, -1)
                     for li in range(nl):
-                        Tre[dI, i, li].addmm_(Ar, rolled[li].T)
+                        Tre[dI][i, li].addmm_(Ar, rolled[li].T)
                         if Ai is not None:
-                            Tim[dI, i, li].addmm_(Ai, rolled[li].T)
+                            Tim[dI][i, li].addmm_(Ai, rolled[li].T)
                     del Ar, Ai
                 del Ci, rolled
             del C
         gmean /= ns
-        Bc = torch.zeros(nD, c, c, 3 * nL, dtype=cdt, device=device)
+        # *** ASSEMBLE Bc ONE Delta-SLICE AT A TIME AND FREE THAT SLICE'S T AS WE GO. ***
+        # Both are lists, so the slices are independent allocations: the peak over the
+        # assembly is max_d [ d*|Bc slice| + (nD-d)*|T slice| ], and |T slice| < |Bc slice|
+        # (ratio 2*3*nl*8 / (3*nL*16) ~ 0.5), so the peak is just the finished Bc instead of
+        # Bc + T.  With one monolithic tensor for each, `del Tre[dI]` would free nothing --
+        # a slice is a view -- and Bc would have to be allocated in full up front.
+        # MEASURED A/B vs the pre-2026-09-24 code (13x13 t=7 B=2, held out): whole-call peak
+        # 2.51x -> 2.12x of one split's Bc, i.e. 0.383x Bc saved, identical at c=160 and 224.
+        # That is under the 0.5x above because the frequency loop's own temporaries partly
+        # refill the freed space.  Losses are bit-identical -- this changes allocation and
+        # freeing only, never a summation order.
+        Bc = []
         for dI, (d1, d2) in enumerate(dreps):
+            Bd = torch.zeros(c, c, 3 * nL, dtype=cdt, device=device)
             for i in range(3):
                 for li, (m1, m2) in enumerate(reps):
-                    Tm = torch.complex(Tre[dI, i, li], Tim[dI, i, li]) / ns
+                    Tm = (Tre[dI][i, li].to(cdt) if Tim[dI] is None
+                          else torch.complex(Tre[dI][i, li], Tim[dI][i, li])) / ns
                     Am = (psi[:, :, li] ** (i + 1)) * Tm
-                    Bc[dI, :, :, i * nL + pos[(m1, m2)]] = coef[i] * Am
+                    Bd[:, :, i * nL + pos[(m1, m2)]] = coef[i] * Am
                     if (m1, m2) != (0, 0):
                         # psi_ab(-m)^n T_ab(-m,D) = exp(2 pi i <D,m>) [psi^n T]_ba(m,D)
                         pf = np.exp(2j * np.pi * (d1 * m1 / H + d2 * m2 / Wd))
-                        Bc[dI, :, :, i * nL + pos[(-m1, -m2)]] = \
+                        Bd[:, :, i * nL + pos[(-m1, -m2)]] = \
                             coef[i] * torch.tensor(pf, dtype=cdt, device=device) * Am.T
                     del Tm, Am
+            Tre[dI] = None
+            Tim[dI] = None
+            Bc.append(Bd)
+            del Bd
         del Tre, Tim
         # Delta-th Fourier coefficient of the exact-diagonal correction (Delta=0 = its mean)
         dg = torch.fft.fft2((dsum / (ns * D)).reshape(c, H, Wd), dim=(-2, -1))
         dgc = torch.stack([dg[:, d1 % H, d2 % Wd] for (d1, d2) in dreps])   # (nD, c)
         return gmean, Bc, dgc.to(cdt)
 
+    # BOTH SPLITS ARE PREPARED UP FRONT and both Delta-resolved Stein tensors stay resident
+    # for the whole frequency loop.  That is the leading factor 2 in the driver's sizing
+    # formula, and it is DELIBERATE: a two-pass train-then-test restructure would halve it
+    # but forces a second sweep of the frequency grid, and this project prioritises runtime
+    # over memory (michimin, 2026-09-24).  Do not reintroduce it without being asked.
     tr_sp = prep(x0)
     gmean, B_tr, dgc_tr = pass1(tr_sp)
     te_sp = B_te = dgc_te = None
@@ -360,6 +387,10 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
         del phs
         return P, q
 
+    # ONE PASS over the frequency grid: each block is solved on train and immediately
+    # scored on test, so w_f never has to be stashed and the grid is swept once.
+    # ⚠ moments() closes over gmean = the TRAIN feature mean and centres BOTH splits by it.
+    # Re-centring the test side on its own mean would silently refit d params at eval time.
     expl = 0.0
     dev_train = 0.0
     dev_test = 0.0
