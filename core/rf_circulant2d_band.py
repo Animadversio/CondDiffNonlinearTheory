@@ -548,7 +548,18 @@ def selftest_band(seed=0, verbose=True, device=None):
     # E costs 3.1 GB at (13,13,Cin=1,c=1,B=1) and 1.2 GB at (7,7,Cin=2,c=2,B=1); the c and Cin
     # are kept small for that reason, NOT because large t is expensive (t does not enter E).
              (13, 13, 1, 1, 7, 300, 0.9, 1),
-             (7, 7, 2, 2, 4, 300, 1.2, 1))
+             (7, 7, 2, 2, 4, 300, 1.2, 1),
+    # ⚠⚠ AND THE TWO KNOBS HAD ONLY EVER BEEN EXERCISED ONE AT A TIME.  Every B>1 case above
+    # runs at t=2 and every t>2 case above runs at B=1, so until 2026-09-23 the B x t
+    # INTERACTION was untested -- and the interaction is precisely where the risk lives: the
+    # Delta-resolved Stein Gram T^n_ab(m, Delta) is indexed by the lag m (which t sets) AND by
+    # Delta = s_r' - s_r (which B sets), so an error in how the two index sets are combined
+    # cannot show up in either single-knob case.  Same error family as the two holes above:
+    # a validation suite that moves one parameter at a time validates a diagonal, not a grid.
+    # This case is added before the T2=5 B=2 CIFAR sweep (michimin, 2026-09-23 23:48), which
+    # is the first production cell with both knobs off their defaults.
+    # The grid must clear BOTH rules: >= 2B+1 = 5 and >= 2t-1 = 7, so 7x7 with t=4, B=2.
+             (7, 7, 1, 1, 4, 300, 1.0, 2))
     for (H, Wd, Cin, c, t, N, sig, B) in cases:
         rng = np.random.default_rng(seed)
         d = Cin * H * Wd
