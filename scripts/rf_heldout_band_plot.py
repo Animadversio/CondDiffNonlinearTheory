@@ -3,7 +3,12 @@
     michimin, 2026-09-23 21:06: "graph loss against noise for held out linear, test edm,
     c=3072 plain 2-d, c=512 B=1 and c=512 B=2"
 
-EVERY CURVE IS A TEST-COLUMN NUMBER ON THE IDENTICAL 10,000 CIFAR TEST IMAGES, so the
+    michimin, 2026-09-23 22:04: "don't add the held out bayes oracle just add the old
+    bayes_uncond we already had"  =>  the Bayes curve on the left panel is `bayes_uncond`
+    from tables/dnn_feature_mmse_cifar10_N10000_noise5_sigma30.npz.  It is the ONLY curve
+    here that is in-sample (its atoms are its targets); see the note by BAYES below.
+
+EVERY OTHER CURVE IS A TEST-COLUMN NUMBER ON THE IDENTICAL 10,000 CIFAR TEST IMAGES, so the
 comparison between any two of them is exact -- no trace offset, no scale mixing (the offset
 Tr(S_test) = 189.794 vs Tr(S_train) = 191.522 is common to all five and cancels in every
 difference plotted here).  Nothing is hand-transcribed; every value is read from the npz.
@@ -56,7 +61,9 @@ D = load('tables/rf_pixel_dense_heldout.npz')    # dense, `{sigma}|{k/d}|dense`,
                                                  # indexing, the spelling differs from every
                                                  # other table in the project.
 O = load('tables/bayes_oracle_heldout.npz')      # empirical-prior Bayes, `oracle|{sigma}` =
-                                                 # [test, se, in_sample, N_eff_te, N_eff_tr]
+                                                 # [test, se, in_sample, N_eff_te, N_eff_tr].
+                                                 # PRINTED ONLY -- see the note by BAYES below.
+M = load('tables/dnn_feature_mmse_cifar10_N10000_noise5_sigma30.npz')
 
 sig = np.array(SIGS)
 W, EDM, EDMSE, P2, B1, B2, DN, BO, BO50 = ({} for _ in range(9))
@@ -93,12 +100,26 @@ series = [
     ('band RF  c=512  B=2',       B2,  '#9467bd', 'v', '-',  1.8),
 ]
 
-# *** THE EMPIRICAL-PRIOR BAYES ORACLE GOES ON THE LEFT PANEL ONLY, AND THAT IS A DELIBERATE
-# CHOICE, NOT AN OVERSIGHT. ***  Its excess over linear runs +91.8 -> +0.9, while every other
-# curve on the right panel lives inside +-11; putting it there would compress the six curves
-# the panel exists to separate into a single line.  Its two endpoints are annotated on the
-# right instead, and the full column is printed below.
-ORACLE = ('Bayes under the empirical 10k-train prior', BO, '#8c564b', 'X', (0, (4, 2)), 2.0)
+# *** WHICH BAYES CURVE GOES ON THE PLOT -- michimin, 2026-09-23 22:04: "don't add the held
+# out bayes oracle just add the old bayes_uncond we already had". ***  So the curve drawn is
+# `bayes_uncond` from tables/dnn_feature_mmse_cifar10_N10000_noise5_sigma30.npz, the same one
+# in figures/dnn_feature_mmse_*.png.  The held-out oracle stays in the script and the table
+# and is PRINTED below, but is not drawn.
+#
+# UNITS CHECK (done before drawing, not assumed): that table's `linear_uncond` at sigma=0.127
+# is 7.9228 against our in-sample Wiener 7.8997 => raw pixels, d=3072, N=10^4, so it is on the
+# same axis as everything else here.  ⚠ ONE ASYMMETRY TO KEEP IN MIND: it is an IN-SAMPLE
+# quantity (atoms = targets) while every other curve on this figure is a test-column number.
+#
+# SIGMA GRID: the sigma30 file's grid contains 7 of our 8 sigma to <=0.08% (0.127 / 0.452 /
+# 0.621 / 0.853 / 1.172 / 1.610 / 2.212) but NOT 5.0 -- the nearest stored point is 5.7362,
+# 14.7% away.  So it is drawn on ITS OWN grid clipped to this figure's x-range rather than
+# interpolated onto ours; that is why it stops at sigma=4.175.  (The sigma40 companion file
+# misses every one of our sigma by 3-11%; do not use it.)
+BSIG, BUNC = (np.asarray(M['sigma'], float), np.asarray(M['bayes_uncond'], float)) if M \
+    else (np.array([]), np.array([]))
+_bm = (BSIG >= sig.min() * 0.999) & (BSIG <= sig.max() * 1.001)
+BAYES = ('Bayes under the empirical prior (`bayes_uncond`)', '#8c564b', 'X', (0, (4, 2)), 2.0)
 
 print(' sigma   W_test    EDM_te  (se)  dense k/d=8   2D c=3072   B=1 c=512   B=2 c=512'
       '   seeds(2D,B1,B2,dense)')
@@ -124,6 +145,15 @@ for s in SIGS:
           f'{bo[4]:13.2f}')
 print(f'  => the held-out curve flattens onto the mean squared NN distance {NNSQ:.4f} as '
       f'sigma->0 (sigma=0.127 gives {BO[SIGS[0]]:.4f}, agreeing to {abs(BO[SIGS[0]]-NNSQ):.4f})')
+
+# THE CURVE THAT IS ACTUALLY DRAWN, on its own sigma grid (see the note by BAYES above).
+print('\n `bayes_uncond` as drawn (dnn_feature_mmse_cifar10_N10000_noise5_sigma30.npz):')
+for a, b in zip(BSIG[_bm], BUNC[_bm]):
+    near = min(SIGS, key=lambda s: abs(np.log(s / a)))
+    flag = 'ours' if abs(near / a - 1) < 1e-3 else f'({100*abs(near/a-1):.1f}% off {near:g})'
+    print(f'  {a:8.4f} {b:10.4f}   {flag}')
+print(f'  => grid stops at {BSIG[_bm][-1]:.4f}; the nearest stored point to sigma=5.0 is '
+      f'{BSIG[BSIG > 5.0][0]:.4f} ({100*(BSIG[BSIG > 5.0][0]/5.0 - 1):.1f}% off), NOT snapped')
 
 # *** EDM vs ITS OWN MATCHED-PRIOR ORACLE.  This is the strongest single statement the oracle
 # curve licenses, and it runs the OPPOSITE way to the worry it was built to test. ***  EDM saw
@@ -160,15 +190,17 @@ def crossing(d):
 
 fig, ax = plt.subplots(1, 2, figsize=(13.2, 5.2))
 
-lab, d, col, mk, ls, lw = ORACLE
-ax[0].annotate(f'$\\sigma\\to0$ limit of each = mean sq. nearest-neighbour\n'
-               f'distance to its atom set: {NNSQ:.1f} (10k) / {NNSQ50:.1f} (50k).\n'
-               f'5$\\times$ the atoms buys {100*(NNSQ-NNSQ50)/NNSQ:.0f}% at d=3072.',
-               (0.13, NNSQ), xytext=(0, 8), textcoords='offset points',
-               fontsize=7.2, color=col, va='bottom')
-ax[0].plot(sig, [BO50[s] for s in SIGS], color=col, ls=':', lw=1.4, alpha=0.85,
-           label='   same, 50k-train prior (matched to EDM)')
-ax[0].plot(sig, [d[s] for s in SIGS], color=col, ls=ls, marker=mk, ms=5, lw=lw, label=lab)
+lab, col, mk, ls, lw = BAYES
+ax[0].plot(BSIG[_bm], BUNC[_bm], color=col, ls=ls, marker=mk, ms=5, lw=lw, label=lab)
+# One neutral label, not an argument: the number is measured (posterior_neff() in
+# scripts/rf_kstar_vs_sigma.py) and is what makes the low-sigma end of this curve read as 0.
+# Placed in the empty top-left quadrant (every curve is below 30 out to sigma=0.6) rather than
+# next to the curve itself, which runs along y=0 straight through the legend.
+ax[0].annotate('posterior over the $10^4$ training atoms, evaluated on\n'
+               'those same atoms; $N_{\\mathrm{eff}}=1.00$ at every $\\sigma\\leq1.61$.\n'
+               'Drawn on its own $\\sigma$ grid (7 of our 8 exact, none at $\\sigma$=5).',
+               (0.025, 0.63), xycoords='axes fraction',
+               fontsize=7.2, color=col, va='top')
 
 for lab, d, col, mk, ls, lw in series:
     y = [d[s] for s in SIGS]
@@ -185,7 +217,7 @@ ax[0].set_xlabel(r'pixel noise $\sigma$')
 ax[0].set_ylabel(r'held-out loss  $\mathbb{E}\,\|x_0-\hat{x}_0\|^2$')
 ax[0].set_title('raw held-out loss vs noise\n(all fitted on 10k train, scored on the 10k CIFAR test set)',
                 fontsize=10)
-ax[0].legend(fontsize=8.0, loc='lower right',
+ax[0].legend(fontsize=8.0, loc='upper left',
              title='the six model curves are labelled on the right panel',
              title_fontsize=7.5)
 ax[0].grid(alpha=0.3)
@@ -219,12 +251,6 @@ for i, (lab, d, col, mk, ls, lw) in enumerate(series[1:]):
                    ha='left', va='center', fontsize=7.5, color=col, zorder=6,
                    bbox=dict(fc='white', ec='none', alpha=0.85, pad=1.2))
 ax[1].annotate('RF beats held-out linear', (0.128, -10.4), fontsize=8.5, color='#2ca02c')
-ax[1].annotate(f'empirical-prior Bayes is OFF SCALE here:\n'
-               f'{BO[SIGS[0]]-W[SIGS[0]]:+.1f} at $\\sigma$={SIGS[0]}  $\\to$  '
-               f'{BO[SIGS[-1]]-W[SIGS[-1]]:+.1f} at $\\sigma$={SIGS[-1]:g}  '
-               f'(never below 0)',
-               (0.128, 5.1), fontsize=7.6, color=ORACLE[2],
-               bbox=dict(fc='white', ec=ORACLE[2], alpha=0.85, lw=0.6, pad=2.0))
 ax[1].legend(fontsize=8.5, loc='lower right')
 
 fig.suptitle('Held-out denoising loss vs noise level, CIFAR-10 raw pixels '
