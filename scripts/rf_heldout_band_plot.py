@@ -1,4 +1,4 @@
-"""LOSS vs NOISE, HELD OUT: linear / EDM / plain 2-D c=3072 / band c=512 B=1 and B=2.
+"""LOSS vs NOISE, HELD OUT: linear / EDM / plain 2-D c=3072 / band c=512 B=1, B=2 and B=3.
 
     michimin, 2026-09-23 21:06: "graph loss against noise for held out linear, test edm,
     c=3072 plain 2-d, c=512 B=1 and c=512 B=2"
@@ -7,6 +7,14 @@
     bayes_uncond we already had"  =>  the Bayes curve on the left panel is `bayes_uncond`
     from tables/dnn_feature_mmse_cifar10_N10000_noise5_sigma30.npz.  It is the ONLY curve
     here that is in-sample (its atoms are its targets); see the note by BAYES below.
+
+    michimin, 2026-09-24 01:58: "add B=3 curve to the loss vs noise graph"
+    *** ⚠ B=3 IS A SHORT CURVE AND MUST BE DRAWN AS ONE.  Job 48071356 was only ever asked
+    for four sigma (0.127 / 0.452 / 1.610 / 2.212) against every other curve's eight, so it
+    is plotted on whatever subset of SIGS is actually IN THE TABLE -- never interpolated onto
+    the full grid, never extended past its last measured point. ***  Same rule the
+    `bayes_uncond` curve gets for its off-grid sigma=5.  B3SIGS is rebuilt from the npz on
+    every run, so re-running this script after a cell lands extends the curve automatically.
 
 EVERY OTHER CURVE IS A TEST-COLUMN NUMBER ON THE IDENTICAL 10,000 CIFAR TEST IMAGES, so the
 comparison between any two of them is exact -- no trace offset, no scale mixing (the offset
@@ -66,7 +74,7 @@ O = load('tables/bayes_oracle_heldout.npz')      # empirical-prior Bayes, `oracl
 M = load('tables/dnn_feature_mmse_cifar10_N10000_noise5_sigma30.npz')
 
 sig = np.array(SIGS)
-W, EDM, EDMSE, P2, B1, B2, DN, BO, BO50 = ({} for _ in range(9))
+W, EDM, EDMSE, P2, B1, B2, B3, DN, BO, BO50 = ({} for _ in range(10))
 NS = {}
 for s in SIGS:
     w = get(H, 'linear|{}', s)
@@ -79,26 +87,66 @@ for s in SIGS:
     p = np.atleast_2d(get(H, '{}|3072|2d', s))
     b1 = np.atleast_2d(get(B, '{}|512|1', s))
     b2 = np.atleast_2d(get(B, '{}|512|2', s))
+    # *** B=3 IS ABSENT AT FOUR OF THE EIGHT SIGMA AND THAT IS NOT AN ERROR -- see the
+    # header.  `get` returns None on a miss, so the key simply never enters B3 and the curve
+    # is drawn over B3SIGS instead of SIGS. ***
+    b3 = get(B, '{}|512|3', s)
     dn = np.atleast_2d(get(D, '{}|8.0|dense', s))
     bo = get(O, 'oracle|{}', s)
     BO50[s] = get(O, 'oracle50|{}', s)[0]
     W[s], EDM[s], EDMSE[s] = w[1], e[2], e[3]
     P2[s], B1[s], B2[s] = p[:, 2].mean(), b1[:, 2].mean(), b2[:, 2].mean()
+    if b3 is not None:
+        b3 = np.atleast_2d(b3)
+        B3[s] = b3[:, 2].mean()
     DN[s] = dn[:, 2].mean()
     BO[s] = bo[0]
-    NS[s] = (len(p), len(b1), len(b2), len(dn))
+    NS[s] = (len(p), len(b1), len(b2), len(dn), len(b3) if b3 is not None else 0)
+
+B3SIGS = [s for s in SIGS if s in B3]
 
 NNSQ = float(O['nn_sq_test_to_train'][0])     # mean squared nearest-neighbour distance,
 NNSQ50 = float(O['nn_sq_test_to_train50'][0])  # test -> train = the sigma->0 limit of BO
 
+# Last element is the curve's OWN sigma grid.  Everything but B=3 is measured at all eight.
 series = [
-    ('linear (Wiener), held out', W,   '#444444', 'o', '-',  2.0),
-    ('EDM U-net (trained on 50k)', EDM, '#d62728', 'D', '--', 2.0),
-    ('dense RF  k/d=8',           DN,  '#ff7f0e', 'P', '-.', 1.8),
-    ('plain 2-D RF  c=3072',      P2,  '#1f77b4', 's', '-',  1.8),
-    ('band RF  c=512  B=1',       B1,  '#2ca02c', '^', '-',  1.8),
-    ('band RF  c=512  B=2',       B2,  '#9467bd', 'v', '-',  1.8),
+    ('linear (Wiener), held out', W,   '#444444', 'o', '-',  2.0, SIGS),
+    ('EDM U-net (trained on 50k)', EDM, '#d62728', 'D', '--', 2.0, SIGS),
+    ('dense RF  k/d=8',           DN,  '#ff7f0e', 'P', '-.', 1.8, SIGS),
+    ('plain 2-D RF  c=3072',      P2,  '#1f77b4', 's', '-',  1.8, SIGS),
+    ('band RF  c=512  B=1',       B1,  '#2ca02c', '^', '-',  1.8, SIGS),
+    ('band RF  c=512  B=2',       B2,  '#9467bd', 'v', '-',  1.8, SIGS),
+    (f'band RF  c=512  B=3  ({len(B3SIGS)} $\\sigma$, line broken at gaps)',
+                                  B3,  '#17becf', '*', '-',  1.8, B3SIGS),
 ]
+
+
+def segments(ss):
+    """Split a curve's sigma grid into maximal runs of points ADJACENT on the full grid.
+
+    *** A LINE SEGMENT IS A CLAIM ABOUT WHAT HAPPENS BETWEEN ITS ENDPOINTS, AND B=3 HAS NO
+    RIGHT TO MAKE ONE ACROSS FOUR SIGMA IT WAS NEVER RUN AT. ***  Joining 0.127 straight to
+    1.61 draws a confident chord over 0.452 / 0.621 / 0.853 / 1.172 -- exactly the octave
+    where every other curve has a measured point, where the linear->EDM gap peaks, and where
+    on the left panel that chord rides ABOVE every other model and reads as "B=3 is terrible
+    in the middle".  It is an artefact of two endpoints and a straight line.
+    So the curve is BROKEN at its holes: markers at every measured sigma, line segments only
+    between neighbours on SIGS.  Same convention as printing an absent cell as `----` instead
+    of dropping the column -- a hole has to be VISIBLE, not smoothed over.
+    Everything else passes SIGS itself and comes back as one unbroken run.
+    """
+    if not ss:
+        return []
+    idx = [SIGS.index(s) for s in ss]
+    out, run = [], [ss[0]]
+    for a, b in zip(idx, idx[1:]):
+        if b == a + 1:
+            run.append(SIGS[b])
+        else:
+            out.append(run)
+            run = [SIGS[b]]
+    out.append(run)
+    return out
 
 # *** WHICH BAYES CURVE GOES ON THE PLOT -- michimin, 2026-09-23 22:04: "don't add the held
 # out bayes oracle just add the old bayes_uncond we already had". ***  So the curve drawn is
@@ -121,16 +169,28 @@ BSIG, BUNC = (np.asarray(M['sigma'], float), np.asarray(M['bayes_uncond'], float
 _bm = (BSIG >= sig.min() * 0.999) & (BSIG <= sig.max() * 1.001)
 BAYES = ('Bayes under the empirical prior (`bayes_uncond`)', '#8c564b', 'X', (0, (4, 2)), 2.0)
 
+# *** ABSENT B=3 CELLS RENDER AS AN EXPLICIT `----`, NEVER AS A DROPPED COLUMN. ***  Same
+# convention as rf_heldout_report.py section B: a hole in a grid has to be VISIBLE in the
+# output, because a table that silently omits the sigma it lacks reads as complete.
+def b3(s, w=11):
+    return f'{B3[s]:{w}.4f}' if s in B3 else '-' * (w - 4) + '----'
+
+
 print(' sigma   W_test    EDM_te  (se)  dense k/d=8   2D c=3072   B=1 c=512   B=2 c=512'
-      '   seeds(2D,B1,B2,dense)')
+      '   B=3 c=512   seeds(2D,B1,B2,dense,B3)')
 for s in SIGS:
     print(f' {s:5.3f} {W[s]:8.4f}  {EDM[s]:8.4f} {EDMSE[s]:.4f} '
-          f'{DN[s]:12.4f} {P2[s]:11.4f} {B1[s]:11.4f} {B2[s]:11.4f}       {NS[s]}')
+          f'{DN[s]:12.4f} {P2[s]:11.4f} {B1[s]:11.4f} {B2[s]:11.4f} {b3(s)}       {NS[s]}')
+_b3list = ', '.join('%g' % s for s in B3SIGS)
+print(f'  => B=3 covers {len(B3SIGS)} of the {len(SIGS)} sigma on this plot ({_b3list}); '
+      f'job 48071356 was asked for four (0.127/0.452/1.61/2.212) and the other four were '
+      f'never requested.  The curve is drawn on that subgrid, NOT interpolated.')
 print('\n excess over the HELD-OUT Wiener (negative = beats linear on the same 10k images):')
 for s in SIGS:
+    e3 = f'{B3[s]-W[s]:+8.4f}' if s in B3 else '    ----'
     print(f' {s:5.3f}  EDM {EDM[s]-W[s]:+8.4f}   dense {DN[s]-W[s]:+8.4f}   '
           f'2D {P2[s]-W[s]:+8.4f}   B=1 {B1[s]-W[s]:+8.4f}   B=2 {B2[s]-W[s]:+8.4f}'
-          f'   | oracle {BO[s]-W[s]:+9.4f}')
+          f'   B=3 {e3}   | oracle {BO[s]-W[s]:+9.4f}')
 
 # *** WHY ONLY THE HELD-OUT ORACLE IS PLOTTABLE. ***  The in-sample column is the retracted
 # `bayes_uncond` curve of figures/dnn_feature_mmse_*.png: its atoms ARE its targets, so at
@@ -179,9 +239,16 @@ for s in SIGS:
           + f'   | best k/d={kb} ({row[kb]:.4f}, {row[kb]-W[s]:+.4f} vs Wiener)')
 
 
-def crossing(d):
-    """sigma at which a curve crosses the held-out Wiener, log-interpolated on the grid."""
-    x = [(s, d[s] - W[s]) for s in SIGS]
+def crossing(d, ss=None):
+    """sigma at which a curve crosses the held-out Wiener, log-interpolated on the grid.
+
+    ⚠ ONLY AS GOOD AS THE BRACKET IT IS INTERPOLATED ACROSS.  For the eight-sigma curves the
+    two straddling points are ADJACENT grid points (0.452 and 0.621, 14% apart), so the
+    crossing is pinned.  B=3 skips 0.621 / 0.853 / 1.172 entirely, so its bracket is 3.6x
+    wide and the interpolated value is a bracket, not a location -- which is why it is
+    printed with its endpoints and NOT drawn as a marker on the figure.
+    """
+    x = [(s, d[s] - W[s]) for s in (ss or SIGS)]
     for (s0, e0), (s1, e1) in zip(x, x[1:]):
         if e0 < 0 <= e1:
             return float(np.exp(np.log(s0) + (np.log(s1) - np.log(s0)) * (-e0) / (e1 - e0)))
@@ -202,15 +269,20 @@ ax[0].annotate('posterior over the $10^4$ training atoms, evaluated on\n'
                (0.025, 0.63), xycoords='axes fraction',
                fontsize=7.2, color=col, va='top')
 
-for lab, d, col, mk, ls, lw in series:
-    y = [d[s] for s in SIGS]
-    # NO label on the left panel -- the six model curves are identical in colour and marker on
+for lab, d, col, mk, ls, lw, ss in series:
+    # ss is the curve's OWN grid: B=3 stops at its last measured sigma instead of being
+    # stretched across the four it was never run at.
+    ms = 8 if mk == '*' else 5
+    # NO label on the left panel -- the model curves are identical in colour and marker on
     # both panels, so one legend (on the right, where there is empty space below the zero line)
     # serves both.  A second copy here had to sit on top of the sigma=0.5-1.2 octave, which is
     # exactly the part of the left panel worth looking at.
-    ax[0].plot(sig, y, ls, color=col, marker=mk, ms=5, lw=lw)
-    ax[1].plot(sig, [d[s] - W[s] for s in SIGS], ls, color=col, marker=mk, ms=5, lw=lw,
-               label=lab)
+    # One plot() call per unbroken run; a run of length 1 still renders its marker.  The
+    # label goes on the first run only, so a broken curve gets ONE legend entry.
+    for k, seg in enumerate(segments(ss)):
+        ax[0].plot(seg, [d[s] for s in seg], ls, color=col, marker=mk, ms=ms, lw=lw)
+        ax[1].plot(seg, [d[s] - W[s] for s in seg], ls, color=col, marker=mk, ms=ms, lw=lw,
+                   label=lab if k == 0 else None)
 
 ax[0].set_xscale('log')
 ax[0].set_xlabel(r'pixel noise $\sigma$')
@@ -236,8 +308,14 @@ YLO, YHI = -11.0, 11.4
 ax[1].set_ylim(YLO, YHI)
 # Crossing markers, staggered in y so the three labels (0.503 / 0.523 / 0.571) do not
 # collide -- they are within 14% of each other in sigma.
-for i, (lab, d, col, mk, ls, lw) in enumerate(series[1:]):
-    xc = crossing(d)
+for i, (lab, d, col, mk, ls, lw, ss) in enumerate(series[1:]):
+    # *** NO CROSSING MARKER FOR B=3, DELIBERATELY. ***  Every other curve's crossing is
+    # bracketed by ADJACENT grid points 14% apart; B=3's bracket skips 0.621 / 0.853 / 1.172
+    # and is 3.6x wide, so a vertical line would claim a precision the grid does not have.
+    # The number is still PRINTED below, with its endpoints.
+    if d is B3:
+        continue
+    xc = crossing(d, ss)
     if xc is None:
         continue
     ylab = 10.6 - 0.95 * i
@@ -261,22 +339,36 @@ fig.savefig(OUT, dpi=160)
 print(f'\nwrote {OUT}')
 
 print('\n crossings of the held-out Wiener (log-interpolated):')
-for lab, d, *_ in series[1:]:
-    xc = crossing(d)
-    print(f'   {lab:32s} {"sigma = %.3f" % xc if xc else "never crosses on this grid"}')
+for lab, d, col, mk, ls, lw, ss in series[1:]:
+    xc = crossing(d, ss)
+    note = ''
+    if xc is not None and d is B3:
+        lo = max([s for s in ss if s < xc])
+        hi = min([s for s in ss if s >= xc])
+        skipped = ', '.join('%g' % s for s in SIGS if lo < s < hi)
+        note = (f'   ⚠ BRACKET {lo:g}-{hi:g} ({hi/lo:.1f}x wide, skipping '
+                f'{skipped}) -- not drawn on the figure')
+    print(f'   {lab:38s} '
+          f'{"sigma = %.3f" % xc if xc else "never crosses on this grid"}{note}')
 print('\n fraction of the linear->EDM gap closed (positive = the RF captures part of it):')
 for s in SIGS:
     g = W[s] - EDM[s]
     print(f' {s:5.3f}  gap {g:6.3f}   dense {100*(W[s]-DN[s])/g:+7.1f}%   '
           f'2D {100*(W[s]-P2[s])/g:+7.1f}%   '
-          f'B=1 {100*(W[s]-B1[s])/g:+7.1f}%   B=2 {100*(W[s]-B2[s])/g:+7.1f}%')
+          f'B=1 {100*(W[s]-B1[s])/g:+7.1f}%   B=2 {100*(W[s]-B2[s])/g:+7.1f}%   '
+          f'B=3 {f"{100*(W[s]-B3[s])/g:+7.1f}%" if s in B3 else "   ----"}')
 
 # Where dense k/d=8 overtakes the best structured arm.  Below this sigma the band is the
 # best non-EDM curve on the plot; above it dense is, and it never stops winning.
-print('\n dense k/d=8 (75,497,472 params) vs band B=2 c=512 (39,321,600):')
+print('\n dense k/d=8 (75,497,472 params) vs band B=2 c=512 (39,321,600) and B=3 (77,070,336):')
 for s in SIGS:
+    # B=3 is the closest thing on the plot to a parameter-matched rival for dense k/d=8
+    # (77.07M vs 75.50M, within 2%), so this column is the fairest dense-vs-band comparison
+    # the grid contains -- and dense still wins it at every sigma where B=3 exists above 0.127.
+    d3 = (f'   |  B=3 - dense {B3[s]-DN[s]:+8.4f}  '
+          f'{"band wins" if B3[s] < DN[s] else "DENSE wins"}') if s in B3 else ''
     print(f' {s:5.3f}  B=2 - dense {B2[s]-DN[s]:+8.4f}   '
-          f'{"band wins" if B2[s] < DN[s] else "DENSE wins"}')
+          f'{"band wins" if B2[s] < DN[s] else "DENSE wins"}{d3}')
 x = [(s, B2[s] - DN[s]) for s in SIGS]
 for (s0, e0), (s1, e1) in zip(x, x[1:]):
     if e0 < 0 <= e1:
@@ -288,7 +380,14 @@ for s in SIGS:
     b2 = np.atleast_2d(get(B, '{}|512|2', s))
     p = np.atleast_2d(get(H, '{}|3072|2d', s))
     wtr = get(H, 'linear|{}', s)
+    g3 = get(B, '{}|512|3', s)
+    g3 = (f'{np.atleast_2d(g3)[:,2].mean()-np.atleast_2d(g3)[:,1].mean():+8.4f}'
+          if g3 is not None else '    ----')
+    # ⚠ AT sigma >= 1.61 EVERY own gap is NEGATIVE -- that is the train/test TRACE OFFSET
+    # (Tr(Sigma_test) = 189.794 vs Tr(Sigma_train) = 191.522, a 0.9% deficit that passes
+    # ~1:1 into the loss at large sigma), NOT better generalisation.  Read gaps RELATIVE to
+    # the common offset of about -0.15, never as absolute numbers.
     print(f' {s:5.3f}  dense k/d=8 {dn[:,2].mean()-dn[:,1].mean():+8.4f}   '
-          f'B=2 {b2[:,2].mean()-b2[:,1].mean():+8.4f}   '
+          f'B=2 {b2[:,2].mean()-b2[:,1].mean():+8.4f}   B=3 {g3}   '
           f'2D c=3072 {p[:,2].mean()-p[:,1].mean():+8.4f}   '
           f'Wiener {wtr[1]-wtr[0]:+8.4f}')
