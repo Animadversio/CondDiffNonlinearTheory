@@ -605,7 +605,22 @@ def selftest_band(seed=0, verbose=True, device=None):
     # at that size is trivial).  So the t=7 axis is validated at B=1 (13x13 case above), the
     # B=3 axis at t=2 and t=4, and the far corner is covered by those three, NOT directly.
     # SAY THIS when reporting a 7x7 B=3 production number rather than implying full coverage.
-             (7, 7, 1, 1, 4, 300, 0.8, 3))
+             (7, 7, 1, 1, 4, 300, 0.8, 3),
+    # *** B=4 HAD NEVER BEEN EXERCISED BY THE BRUTE FORCE AT ALL (2026-09-24, before the
+    # 7x7 c=128 B=4 production run).  nD = ((4B+1)^2+1)/2 goes 85 -> 145 from B=3 to B=4 and
+    # nR = (2B+1)^2 goes 49 -> 81, so both the Delta index set and the modulation set are
+    # larger than anything above.  9x9 is the MINIMAL grid: box(4) offsets are taken mod
+    # (H, Wd), so both dimensions need >= 2B+1 = 9 (a rectangular grid does not help).
+    # t = 4 is free -- t does NOT enter E -- so this one case closes the B=4 hole AND moves
+    # the B x t interaction to (B=4, t=4) at once, exactly as the (B=3, t=4) case above did.
+    # Grid clears both rules: >= 2B+1 = 9 and >= 2t-1 = 7.
+    #
+    # ⚠⚠ AND THE PRODUCTION CORNER (B=4, t=7) IS EVEN FURTHER OUT OF REACH THAN (B=3, t=7).
+    # The 2t-1 rule forces 13x13, and E is (Cin*c*nR*D) x (c*nR*D) x d with nR = 81 and
+    # D = 169, so even at Cin = c = 1 it is 13689 x 13689 x 169 x 8 B = *253 GiB* (vs 86 GiB
+    # for B=3).  So the t=7 axis is validated at B=1, the B=4 axis at t=4, and the 7x7 B=4
+    # production cell is covered by those, NOT directly.  SAY THIS when reporting its number.
+             (9, 9, 1, 1, 4, 300, 0.85, 4))
     for (H, Wd, Cin, c, t, N, sig, B) in cases:
         rng = np.random.default_rng(seed)
         d = Cin * H * Wd
