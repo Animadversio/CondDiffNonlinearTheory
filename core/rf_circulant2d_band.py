@@ -93,6 +93,19 @@ HELD-OUT EVALUATION (`x0_test=`) is identical in contract to `core.rf_circulant2
 solved on train moments and scored against test moments centred by the TRAIN means, and
 {'train', 'train_resid', 'test'} are returned.  See that module's docstring for what does and
 does not cross the split.
+
+LABEL CONDITIONING (`lab=`, `gam=`, `lab_test=`, `class_centre=`; 2026-09-25) is the same two
+edits as in `core.rf_circulant2d` (its "LABEL CONDITIONING" section has the math):
+  * the shift <gamma_a, U_n> is added to the pre-activation BEFORE the pointwise Stein pieces,
+    and the Delta-resolved Grams T^n_ab(m, Delta) and the Delta-resolved diagonal are built
+    from those pieces, so they need nothing else;
+  * under class_centre the features are centred by the TRAIN mean of each image's class
+    BEFORE modulation (and x0 likewise).  Centring first is exact: m_r is a per-position
+    multiplier, so the free class bias
+        beta_class = mu_class - sum_{a,r} W_{a,r} * (m_r gbar_{a,class})
+    is eliminated just as the plain free bias is.
+The shifted-frequency gather, the Hermitian fold and the per-frequency K x K solve are
+untouched.  `selftest_band_cond` checks it against an explicit-bias brute force.
 """
 
 import numpy as np
@@ -100,6 +113,8 @@ import torch
 
 from core.rf_gmm_estimators_torch import _ndtr, _npdf
 from core.rf_circulant2d import lag_reps, lag_full, _explicit_theta, _bccb_basis, _kk_moments
+from core.rf_circulant2d import (_cond_setup, _class_means, _readout_U, _raw_moments,
+                                 _explicit_fit_and_score)
 
 
 def band_offsets(B):
@@ -131,13 +146,16 @@ def delta_reps(B):
 
 def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
                              dtype=torch.float64, sample_chunk=None, pass1_chunk=None,
-                             freq_chunk=8, super_chunk=2048, verbose=False, x0_test=None):
+                             freq_chunk=8, super_chunk=2048, verbose=False, x0_test=None,
+                             lab=None, gam=None, lab_test=None, class_centre=False):
     """L for the band-modulated nonlinear RF on G = Z_H x Z_W with free Cin-channel mixing.
 
     x0      : (N, Cin, H, W) real images.
     h       : (c, Cin, H, W) filters, spatially supported on [0,t) x [0,t).
     B       : band half-width.  B = 0 reproduces `circulant2d_rf_mmse` exactly.
     x0_test : optional held-out split; returns a dict instead of a float.
+    lab, gam, lab_test, class_centre : label conditioning, exactly as in
+              `core.rf_circulant2d.circulant2d_rf_mmse`; lab=None is unconditional.
 
     Trained parameters = Cin * c * H * W * (2B+1)^2.
     """
@@ -185,6 +203,11 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
     nb1 = int(pass1_chunk)
 
     mu = x0.mean(0)
+    cond = _cond_setup(lab, gam, lab_test, class_centre, N,
+                       None if x0_test is None else x0_test.shape[0], c, device, dtype)
+    bias_tr, bias_te = cond['bias']             # (c, n) label shifts, or None
+    cid_tr, cid_te = cond['cid']                # class ids for class_centre, or None
+    mu_cls = _class_means(x0, cid_tr, cond)     # TRAIN class means: centre both splits
 
     Hc = torch.fft.rfft2(h, dim=(-2, -1)).reshape(c, Cin, F)
     HpT = Hc.conj().permute(2, 1, 0).contiguous()
@@ -209,13 +232,17 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
     dcos, dsin = torch.cos(dang), torch.sin(dang)               # (nD, D)
     del dang
 
-    def prep(xs):
+    def prep(xs, bias=None, cid=None):
         xs = xs.to(device=device, dtype=dtype)
         ns = xs.shape[0]
         Xr = torch.fft.rfft2(xs, dim=(-2, -1)).reshape(ns, Cin, F)
-        vv = torch.fft.rfft2(xs - mu, dim=(-2, -1)).reshape(ns, Cin, F) / sq
-        tr = float(((xs - mu) ** 2).sum() / max(ns, 1))
-        return {'Xr': Xr, 'vh': vv, 'N': ns, 'trace': tr}
+        xc = xs - mu if cid is None else xs - mu_cls[cid]      # class_centre: own class
+        vv = torch.fft.rfft2(xc, dim=(-2, -1)).reshape(ns, Cin, F) / sq
+        tr = float((xc ** 2).sum() / max(ns, 1))
+        del xc
+        oh = (None if cid is None else
+              torch.nn.functional.one_hot(cid, cond['n_cls']).to(dtype))     # (ns, n_cls)
+        return {'Xr': Xr, 'vh': vv, 'N': ns, 'trace': tr, 'bias': bias, 'cid': cid, 'oh': oh}
 
     def feats(sp, n0, n1):
         pr = torch.matmul(sp['Xr'][n0:n1].permute(2, 0, 1), HpT)
@@ -223,6 +250,9 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
         del pr
         M = torch.fft.irfft2(Mf, s=(H, Wd), dim=(-2, -1)).reshape(c, n1 - n0, D)
         del Mf
+        if sp['bias'] is not None:
+            # THE conditioning line: one scalar per (plane, image), constant over u
+            M.add_(sp['bias'][:, n0:n1].unsqueeze(-1))
         sa = s.view(-1, 1, 1)
         z = M / sa
         Phi = _ndtr(z)
@@ -232,10 +262,13 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
 
     coef = (1.0, 2.0, 6.0)
 
-    def pass1(sp):
-        """Feature mean, the Delta-resolved lag tensor, and the Delta-resolved diagonal."""
+    def pass1(sp, want_cls=False):
+        """Feature mean, the Delta-resolved lag tensor, and the Delta-resolved diagonal (and,
+        with want_cls, the per-class feature means: the TRAIN split under class_centre)."""
         ns = sp['N']
         gmean = torch.zeros(c, D, dtype=dtype, device=device)
+        gcls = (torch.zeros(c, cond['n_cls'], D, dtype=dtype, device=device)
+                if want_cls else None)                   # class SUMS, (c, n_cls, D)
         dsum = torch.zeros(c, D, dtype=dtype, device=device)
         # ONE TENSOR PER Delta REPRESENTATIVE, not one (nD, 3, nl, c, c) block, so that a
         # slice can be RELEASED the moment its Bc slice is built (see the assembly below).
@@ -248,6 +281,10 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
             n1 = min(n0 + nb1, ns)
             M, Phi, ph, G, sa = feats(sp, n0, n1)
             gmean += G.sum(1)
+            if gcls is not None:
+                # one-hot matmul (deterministic on CUDA, unlike index_add_).  The 2-D left
+                # operand broadcasts over planes, so G is read in place: no transposed copy.
+                gcls += sp['oh'][n0:n1].T @ G
             C = [sa * Phi, sa * ph / 2.0, -M * ph / 6.0]
             de = ((M ** 2 + sa ** 2) * Phi + M * sa * ph - G ** 2).sum(1)
             fo = (C[0] ** 2).sum(1) + 2.0 * (C[1] ** 2).sum(1) + 6.0 * (C[2] ** 2).sum(1)
@@ -274,6 +311,8 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
                 del Ci, rolled
             del C
         gmean /= ns
+        if gcls is not None:                         # sums -> class MEANS
+            gcls /= cond['count'].to(dtype).view(1, -1, 1)
         # *** ASSEMBLE Bc ONE Delta-SLICE AT A TIME AND FREE THAT SLICE'S T AS WE GO. ***
         # Both are lists, so the slices are independent allocations: the peak over the
         # assembly is max_d [ d*|Bc slice| + (nD-d)*|T slice| ], and |T slice| < |Bc slice|
@@ -308,19 +347,19 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
         # Delta-th Fourier coefficient of the exact-diagonal correction (Delta=0 = its mean)
         dg = torch.fft.fft2((dsum / (ns * D)).reshape(c, H, Wd), dim=(-2, -1))
         dgc = torch.stack([dg[:, d1 % H, d2 % Wd] for (d1, d2) in dreps])   # (nD, c)
-        return gmean, Bc, dgc.to(cdt)
+        return gmean, Bc, dgc.to(cdt), gcls
 
     # BOTH SPLITS ARE PREPARED UP FRONT and both Delta-resolved Stein tensors stay resident
     # for the whole frequency loop.  That is the leading factor 2 in the driver's sizing
     # formula, and it is DELIBERATE: a two-pass train-then-test restructure would halve it
     # but forces a second sweep of the frequency grid, and this project prioritises runtime
     # over memory (michimin, 2026-09-24).  Do not reintroduce it without being asked.
-    tr_sp = prep(x0)
-    gmean, B_tr, dgc_tr = pass1(tr_sp)
+    tr_sp = prep(x0, bias_tr, cid_tr)
+    gmean, B_tr, dgc_tr, gcls = pass1(tr_sp, want_cls=cid_tr is not None)
     te_sp = B_te = dgc_te = None
     if x0_test is not None:
-        te_sp = prep(x0_test)
-        _, B_te, dgc_te = pass1(te_sp)
+        te_sp = prep(x0_test, bias_te, cid_te)
+        _, B_te, dgc_te, _ = pass1(te_sp)
 
     lm1 = torch.tensor([m[0] for m in full] * 3, device=device, dtype=dtype)
     lm2 = torch.tensor([m[1] for m in full] * 3, device=device, dtype=dtype)
@@ -355,7 +394,10 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
             for n0 in range(ns0, ns1, nb):
                 n1 = min(n0 + nb, ns1)
                 M, Phi, ph, G, sa = feats(sp, n0, n1)
-                Gc = (G - gmean.unsqueeze(1)).reshape(c, n1 - n0, H, Wd)
+                if sp['cid'] is None:
+                    Gc = (G - gmean.unsqueeze(1)).reshape(c, n1 - n0, H, Wd)
+                else:   # class_centre: the TRAIN mean of each image's own class, both splits
+                    Gc = G.sub_(gcls[:, sp['cid'][n0:n1], :]).reshape(c, n1 - n0, H, Wd)
                 U = torch.fft.rfft2(Gc, dim=(-2, -1)).reshape(c, n1 - n0, F) / sq
                 sel = U[:, :, idx]
                 sel = torch.where(cjf, sel.conj(), sel)
@@ -389,7 +431,8 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
 
     # ONE PASS over the frequency grid: each block is solved on train and immediately
     # scored on test, so w_f never has to be stashed and the grid is swept once.
-    # ⚠ moments() closes over gmean = the TRAIN feature mean and centres BOTH splits by it.
+    # ⚠ moments() closes over gmean = the TRAIN feature mean and centres BOTH splits by it
+    # (under class_centre: over gcls, the TRAIN class means, indexed by each image's label).
     # Re-centring the test side on its own mean would silently refit d params at eval time.
     expl = 0.0
     dev_train = 0.0
@@ -513,6 +556,52 @@ def circulant2d_band_rf_mmse_bruteforce(x0, h, sigma, B, lam=1e-6, device='cpu',
     return {'train': train,
             'train_resid': float(trace_p0 - 2.0 * float(b @ w) + float(w @ (A @ w))),
             'test': float(tr_t - 2.0 * float(bt @ w) + float(w @ (At @ w)))}
+
+
+def circulant2d_band_rf_mmse_bruteforce_cond(x0, h, sigma, B, lam=1e-6, device='cpu',
+                                             dtype=torch.float64, x0_test=None, lab=None,
+                                             gam=None, lab_test=None, class_centre=False):
+    """Reference for the CONDITIONAL band estimator (with lab=None, a second reference for
+    the unconditional one): the plain BCCB readout over the c(2B+1)^2 REAL modulated planes,
+    as in `circulant2d_band_rf_mmse_bruteforce`, plus the readout's free bias WRITTEN OUT as
+    regressors -- class indicators under class_centre, the constant 1 otherwise -- solved
+    jointly on RAW moments.  Nothing is centred, so the structured path's centre-then-
+    modulate step is checked rather than shared.  The moments are formed on the UNREPLICATED
+    (a,u) set and gathered afterwards, for the reason given in the warning above."""
+    x0 = x0.to(device=device, dtype=dtype)
+    h = h.to(device=device, dtype=dtype)
+    N, Cin, H, Wd = x0.shape
+    c = h.shape[0]
+    D = H * Wd
+    d = Cin * D
+    cond = _cond_setup(lab, gam, lab_test, class_centre, N,
+                       None if x0_test is None else x0_test.shape[0], c, device, dtype)
+    mods = real_modulations(B, H, Wd, device, dtype)
+    nR = mods.shape[0]
+    ceff = c * nR
+    K = ceff * D
+    Th = _explicit_theta(h, H, Wd).to(device=device, dtype=dtype)           # (c*D, d)
+    kk = torch.arange(K, device=device)
+    src = (kk // (nR * D)) * D + (kk % D)
+    mult = mods[(kk // D) % nR, kk % D].contiguous()
+
+    def mom(xs, bias, cid):
+        n = xs.shape[0]
+        xf = xs.to(device=device, dtype=dtype).reshape(n, d)
+        Mb = None if bias is None else bias.T.repeat_interleave(D, dim=1)      # (n, c*D)
+        m = _raw_moments(xf, Th, sigma, Mb, _readout_U(cid, cond['n_cls'], n, device, dtype))
+        m['pp'] = mult.view(-1, 1) * m['pp'][src][:, src] * mult.view(1, -1)
+        m['xp'] = m['xp'][:, src] * mult.view(1, -1)
+        m['pu'] = mult.view(-1, 1) * m['pu'][src]
+        return m
+
+    E = _bccb_basis(Cin, ceff, H, Wd, device, dtype)
+    modnorm = (mods ** 2).sum(1)
+    pj = (torch.arange(Cin * ceff * D, device=device) // D) % ceff % nR
+    reg = torch.diag(lam * modnorm[pj])
+    mtr = mom(x0, cond['bias'][0], cond['cid'][0])
+    mte = None if x0_test is None else mom(x0_test, cond['bias'][1], cond['cid'][1])
+    return _explicit_fit_and_score(E, reg, mtr, mte)
 
 
 def _toy(rng, n, Cin, H, Wd, A, shift, scale, dev):
@@ -690,5 +779,99 @@ def selftest_band(seed=0, verbose=True, device=None):
     return ok
 
 
+def selftest_band_cond(seed=0, verbose=True, device=None):
+    """Label conditioning of the band estimator.  All must pass:
+
+    (a) BRUTE FORCE with the free bias written out as regressors (class indicators under
+        class_centre, the constant 1 otherwise) on RAW moments of the c(2B+1)^2 REAL
+        modulated planes, B = 1 and 2, in-sample and held out on a test split with a
+        DIFFERENT class mix, for gamma + VU, gamma alone and VU alone.
+    (b) that reference with lab=None equals `circulant2d_band_rf_mmse_bruteforce`.
+    (c) B = 0 reproduces the conditional plain estimator `circulant2d_rf_mmse`, both modes,
+        at CIFAR-like settings (odd t, Cin=3).
+    (d) lam = 0, test == train, B = 1, gamma + VU: held-out collapses onto in-sample.
+    Every case is small (<= 5x5 at B=2): none needs the H200 that `selftest_band` does.
+    """
+    from core.rf_circulant2d import circulant2d_rf_mmse, _toy_cond
+    dev = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+    ok = True
+    keys = ('train', 'train_resid', 'test')
+
+    def rel_of(a, b):
+        return max(abs(a[k] - b[k]) / max(abs(b[k]), 1e-12) for k in keys)
+
+    def report(tag, rel, tol):
+        nonlocal ok
+        good = rel < tol
+        ok &= good
+        if verbose:
+            print(f"  {tag:<66} rel={rel:.1e} {'OK' if good else 'FAIL'}", flush=True)
+
+    def draw(rng, H, Wd, Cin, c, t, N, ncls):
+        d = Cin * H * Wd
+        A = rng.standard_normal((d, d)) * 0.5
+        offs = rng.standard_normal((ncls, d)) * 0.8
+        x0, y0 = _toy_cond(rng, N, Cin, H, Wd, A, 0.0, 1.0, offs, None, dev)
+        xt, yt = _toy_cond(rng, N // 2 + 37, Cin, H, Wd, A, 0.25, 1.15, offs,
+                           rng.dirichlet(np.full(ncls, 4.0)), dev)
+        hh = torch.zeros(c, Cin, H, Wd, dtype=torch.float64, device=dev)
+        hh[:, :, :t, :t] = torch.tensor(
+            rng.standard_normal((c, Cin, t, t)) / np.sqrt(Cin * t * t),
+            dtype=torch.float64, device=dev)
+        gg = torch.tensor(rng.standard_normal((c, ncls)) / np.sqrt(ncls),
+                          dtype=torch.float64, device=dev)
+        return x0, y0, xt, yt, hh, gg
+
+    kw = dict(lam=1e-6, device=dev, sample_chunk=7, pass1_chunk=9, freq_chunk=3,
+              super_chunk=13)
+    # (a) + (b).  Grids clear both rules: >= 2B+1 and >= 2t-1 in each dimension.
+    cases = ((4, 4, 2, 2, 2, 400, 1.1, 1, 3),
+             (6, 4, 1, 2, 2, 400, 1.5, 1, 2),
+             (5, 5, 1, 2, 2, 300, 0.9, 2, 3))
+    for (H, Wd, Cin, c, t, N, sig, B, ncls) in cases:
+        rng = np.random.default_rng(seed)
+        x0, y0, xt, yt, hh, gg = draw(rng, H, Wd, Cin, c, t, N, ncls)
+        tag0 = f"{H}x{Wd} Cin={Cin} c={c} t={t} B={B} sigma={sig} n_cls={ncls}"
+        for mode, g_, cc in (('gamma+VU', gg, True), ('gamma only', gg, False),
+                             ('VU only', None, True)):
+            new = circulant2d_band_rf_mmse(x0, hh, sig, t, B, x0_test=xt, lab=y0, gam=g_,
+                                           lab_test=yt, class_centre=cc, **kw)
+            ref = circulant2d_band_rf_mmse_bruteforce_cond(x0, hh, sig, B, lam=1e-6,
+                                                           device=dev, x0_test=xt, lab=y0,
+                                                           gam=g_, lab_test=yt,
+                                                           class_centre=cc)
+            report(f"(a) {tag0} {mode}", rel_of(new, ref), 1e-9)
+        old = circulant2d_band_rf_mmse_bruteforce(x0, hh, sig, B, lam=1e-6, device=dev,
+                                                  x0_test=xt)
+        alt = circulant2d_band_rf_mmse_bruteforce_cond(x0, hh, sig, B, lam=1e-6, device=dev,
+                                                       x0_test=xt)
+        report(f"(b) {tag0} explicit-bias ref == band ref", rel_of(alt, old), 1e-9)
+
+    # (c) B = 0 against the conditional plain estimator
+    rng = np.random.default_rng(seed + 3)
+    x0, y0, xt, yt, hh, gg = draw(rng, 8, 8, 3, 3, 3, 500, 4)
+    for sig in (0.5, 1.7):
+        for mode, g_, cc in (('gamma+VU', gg, True), ('gamma only', gg, False)):
+            a = circulant2d_band_rf_mmse(x0, hh, sig, 3, 0, lam=1e-6, device=dev,
+                                         sample_chunk=17, pass1_chunk=23, freq_chunk=5,
+                                         super_chunk=41, x0_test=xt, lab=y0, gam=g_,
+                                         lab_test=yt, class_centre=cc)
+            b = circulant2d_rf_mmse(x0, hh, sig, 3, lam=1e-6, device=dev, sample_chunk=13,
+                                    freq_chunk=7, super_chunk=29, x0_test=xt, lab=y0,
+                                    gam=g_, lab_test=yt, class_centre=cc)
+            report(f"(c) B=0 vs circulant2d_rf_mmse sigma={sig} {mode}", rel_of(a, b), 1e-11)
+
+    # (d) lam = 0, test == train
+    rng = np.random.default_rng(seed + 5)
+    x0, y0, _, _, hh, gg = draw(rng, 6, 6, 2, 2, 2, 400, 3)
+    r = circulant2d_band_rf_mmse(x0, hh, 0.8, 2, 1, lam=0.0, device=dev, sample_chunk=11,
+                                 pass1_chunk=13, freq_chunk=4, super_chunk=23, x0_test=x0,
+                                 lab=y0, gam=gg, lab_test=y0, class_centre=True)
+    report("(d) test==train, lam=0, B=1, gamma+VU",
+           abs(r['test'] - r['train']) / max(abs(r['train']), 1e-12), 1e-9)
+    return ok
+
+
 if __name__ == '__main__':
     print("selftest_band:", "PASS" if selftest_band() else "FAIL")
+    print("selftest_band_cond:", "PASS" if selftest_band_cond() else "FAIL")

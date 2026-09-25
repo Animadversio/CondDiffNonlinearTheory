@@ -1,0 +1,261 @@
+%% Band-limited readout (order B) for the block-circulant RF denoiser.
+%% Written to slot in after Section 4 ("Unconditional Nonlinear Denoiser with
+%% Circulant Matrix") of "circulant linear and nonlinear.tex", whose notation it
+%% reuses verbatim: F, f_k, Sigma_phi^{(a,b)}, P^{(a,b)}, Q^{(a)}, v_k = conj(what_k).
+%% Every displayed identity is asserted to machine precision by
+%% scripts/selftest_band_readout.py.
+
+\section{Band-Limited Readout of Order $B$}
+
+\paragraph{Naming.} Section 6 bands $\Theta$ \emph{in space}: each $h_{a}$ has
+$t<d$ contiguous non-zero taps, so a feature only sees a $t$-neighbourhood of
+$\boldsymbol{y}$. This section bands $\boldsymbol{W}$ \emph{in frequency}. The two
+are independent knobs in conjugate domains, so to keep them apart we call $t$ the
+\textbf{window} (Section 6) and reserve \textbf{band} and the symbol $B$ for the
+readout below.
+
+\subsection{Motivation: only the diagonal reaches the loss}
+
+The band is not introduced for capacity. It is the smallest change that makes a part
+of the data the circulant readout \emph{structurally cannot see} visible to it.
+
+\paragraph{Observation.} In Section 4 the loss depends on the second-order statistics
+only through
+\[
+(\mathbf{P}_{k})_{ab}=\boldsymbol{P}^{(a,b)}_{kk},
+\qquad
+(\mathbf{q}_{k})_{a}=\boldsymbol{Q}^{(a)}_{kk}.
+\]
+Only the \textbf{diagonals} of $\boldsymbol{P}^{(a,b)}=\boldsymbol{F}\boldsymbol{\Sigma}^{(a,b)}_{\phi}\boldsymbol{F}^{*}$
+and $\boldsymbol{Q}^{(a)}=\boldsymbol{F}\boldsymbol{\Sigma}_{\phi_{a},\boldsymbol{x_{0}}}\boldsymbol{F}^{*}$
+appear: $dc^{2}$ numbers out of $d^{2}c^{2}$, and $d$ out of $d^{2}$. Every off-diagonal
+entry $\boldsymbol{P}^{(a,b)}_{kl}$, $k\ne l$, is invisible. Perturbing the data so that
+only off-diagonals change leaves $\mathcal{L}^{\text{circ}}_{\sigma}$ \emph{exactly}
+unchanged --- the circulant readout is not merely bad at using that information, it is
+not a function of it.
+
+\paragraph{What the discarded entries are.} $\boldsymbol{P}^{(a,b)}_{kl}=f^{H}_{k}\boldsymbol{\Sigma}^{(a,b)}_{\phi}f_{l}$.
+If $\boldsymbol{\Sigma}^{(a,b)}_{\phi}$ commutes with the shift $\boldsymbol{S}$ --- that
+is, if the feature process is shift-stationary --- then $\boldsymbol{F}$ diagonalises it
+and every off-diagonal entry is zero. Hence:
+
+\emph{Lemma (exactness).} The circulant readout is lossless if and only if the relevant
+second-order statistics are shift-stationary, and the toll it pays is exactly the
+off-diagonal mass it cannot see.
+
+More precisely, expanding $\boldsymbol{\Sigma}_{\phi}$ in the Weyl basis
+$\text{diag}(e_{\Delta})\boldsymbol{S}^{m}$, the mass on the $\Delta$-th off-diagonal is
+the coefficient of the modulation $e_{\Delta}$: it measures how much the covariance
+\emph{varies across space} at spatial frequency $\Delta$. The equivariant toll of
+Section 4 is therefore a direct measurement of the non-stationarity of the data, and
+nothing else.
+
+\paragraph{Why modulation is the right repair.} Because $\boldsymbol{E}^{H}_{s}f_{k}=f_{k-s}$,
+\[
+f^{H}_{k}\boldsymbol{\Sigma}_{\psi_{a,s},\psi_{b,s'}}f_{k}=\boldsymbol{P}^{(a,b)}_{k-s,\,k-s'} :
+\]
+\textbf{a diagonal entry of the modulated problem is an off-diagonal entry of the
+original one.} Modulation is precisely the operation that rotates off-diagonals onto the
+diagonal, where the Section 4 solver already looks. This is why the band needs no new
+optimisation argument, and why band-$B$ reaches exactly the offsets $|\Delta|\le 2B$ ---
+the count $4B+1$ (resp. $(4B+1)^{2}$ in two dimensions) is not an implementation detail
+but the definition of what the class can see.
+
+\paragraph{Why a neighbourhood and not a subgroup.} Two separate questions: which
+offsets carry the mass, and which offsets a relaxation reaches. Period-$P$ sharing
+reaches $\Delta\in(d/P)\mathbb{Z}$, a subgroup whose smallest non-zero element is $d/P$;
+band-$B$ reaches the offsets \emph{nearest} the diagonal. Image non-stationarity is
+smooth and whole-image scale --- objects centred, borders unlike interiors, sky above
+ground --- so its mass concentrates at small $|\Delta|$, which is exactly what a comb
+skips and a band takes first.
+
+\paragraph{Both halves confirmed.} \texttt{scripts/band\_offdiag\_motivation.py},
+$d=64$, $\sigma=0.45$, three ensembles with the same marginal smoothness:
+
+\begin{center}
+\begin{tabular}{lccc}
+\hline
+ & stationary & smooth envelope & period-$4$ texture\\
+\hline
+off-diag.\ mass at $\Delta=1$ & $1.3\cdot10^{-6}$ & $1.5\cdot10^{-1}$ & $9.7\cdot10^{-6}$\\
+off-diag.\ mass at $\Delta=2$ & $2.4\cdot10^{-6}$ & $2.8\cdot10^{-2}$ & $1.4\cdot10^{-5}$\\
+toll removed by band $B=1$ & $+0.0000$ & $\mathbf{+0.3821}$ & $+0.0000$\\
+toll removed by band $B=2$ & $+0.0000$ & $\mathbf{+0.4188}$ & $+0.0001$\\
+toll removed by comb $p=4$ & $+0.0000$ & $+0.0000$ & $\mathbf{+4.6660}$\\
+\hline
+\end{tabular}
+\end{center}
+
+On a shift-stationary source the off-diagonals vanish and \emph{neither} relaxation buys
+anything, as the Lemma requires. On smooth non-stationarity the band buys and the comb
+is blind; on a periodic texture the comb buys and the band is blind. The two relaxations
+are not stronger and weaker versions of one another --- they read different off-diagonals.
+
+\paragraph{On CIFAR.} Held-out, $\mathbb{Z}_{32}\times\mathbb{Z}_{32}$ with free channel
+mixing, as a percentage of the $B=0$ toll removed, against the number of frequency
+offsets each class reaches ($(4B+1)^{2}$ for the band, $p^{2}$ for the comb):
+
+\begin{center}
+\begin{tabular}{lrrrrr}
+\hline
+$\sigma$ & toll $(B{=}0)$ & $B{=}1$ (25) & $B{=}2$ (81) & $B{=}3$ (169) & $p{=}16$ (256)\\
+\hline
+$0.127$ & $0.441$ & $54.7\%$ & $78.0\%$ & $90.8\%$ & $74.6\%$\\
+$0.452$ & $2.491$ & $38.9\%$ & $56.5\%$ & $67.2\%$ & $61.0\%$\\
+$0.853$ & $4.167$ & $36.3\%$ & $52.7\%$ & $63.7\%$ & $55.7\%$\\
+$1.610$ & $6.020$ & $40.1\%$ & $55.3\%$ & $65.7\%$ & $48.2\%$\\
+$5.000$ & $7.413$ & $56.9\%$ & $69.3\%$ & $77.4\%$ & $29.2\%$\\
+\hline
+\end{tabular}
+\end{center}
+
+Band $B=3$ removes more of the toll than comb $p=16$ at every $\sigma$ while reaching
+$1.5\times$ fewer offsets. The margin is widest at the extremes of $\sigma$ and narrowest
+around $\sigma\approx0.5$--$0.85$, where $B=2$ and $p=16$ are comparable; the ordering by
+class is robust, the ordering at a fixed small offset budget is not.
+
+\subsection{The class}
+
+Fix $B\ge0$ with $2B+1\le d$ and let $\boldsymbol{E}_{s}=\text{diag}(e_{s})$,
+$e_{s}[p]=e^{2\pi isp/d}$, be modulation by the $s$-th character. Replace each
+circulant block $\boldsymbol{W}_{a}$ of Section 4 by
+\[
+\boldsymbol{W}_{a}=\sum^{B}_{s=-B}\boldsymbol{C}_{a,s}\boldsymbol{E}_{s},
+\qquad
+\boldsymbol{C}_{a,s}=\boldsymbol{F}^{*}\text{diag}(\hat{\boldsymbol{W}}_{a,s})\boldsymbol{F}
+\ \ \text{circulant},
+\]
+so the free parameters are $\hat{w}^{a,s}_{k}$ for $1\le a\le c$, $|s|\le B$,
+$1\le k\le d$. At $B=0$ the sum has one term and $\boldsymbol{W}_{a}=\boldsymbol{C}_{a,0}$
+is circulant, recovering Section 4 exactly. The constraint $2B+1\le d$ is what makes
+the offsets $\{-B,\dots,B\}$ distinct modulo $d$; without it two offsets alias onto
+the same frequency shift and the parameterisation is redundant.
+
+\paragraph{Why this is a band.} Since
+$(\boldsymbol{F}\boldsymbol{E}_{s}\boldsymbol{F}^{*})_{jk}=\delta[j-k-s]$,
+\[
+(\boldsymbol{F}\boldsymbol{W}_{a}\boldsymbol{F}^{*})_{jk}=\hat{w}^{a,\,j-k}_{j},
+\]
+which is non-zero only for $|j-k|\le B \pmod d$: output frequency $j$ reads input
+frequencies $j-B,\dots,j+B$. $B=0$ is the diagonal (circulant); $2B+1=d$ is a dense
+$\boldsymbol{W}$. The family is nested,
+$\mathcal{W}^{(0)}\subset\mathcal{W}^{(1)}\subset\dots\subset\mathbb{R}^{d\times d}$,
+so at the population level $\mathcal{L}^{\text{band}(B)}_{\sigma}$ is non-increasing
+in $B$; any non-monotonicity observed on held-out data is therefore an estimation
+effect, not a property of the class.
+
+\paragraph{Relation to the other relaxations.} Every readout in this project is a
+truncation of the discrete Weyl expansion
+$\boldsymbol{A}=\sum_{s,m}\alpha[s,m]\,\text{diag}(e_{s})\boldsymbol{S}^{m}$, keeping
+all lags $m$ and some set of modulations $s$: circulant keeps $s=0$; period-$P$
+sharing keeps the subgroup $(d/P)\mathbb{Z}$; band-$B$ keeps the neighbourhood
+$\{|s|\le B\}$. The first two are subgroups of $\mathbb{Z}_{d}$ and the third is not,
+which is why a search over subgroups never produces it. For $B\ge1$ the set
+$\{|s|\le B\}$ contains no non-trivial subgroup, so $\boldsymbol{W}_{a}$ commutes with
+no $\boldsymbol{S}^{m}$, $m\not\equiv0$: band-$B$ is not an equivariant class.
+
+\subsection{Reduction to Section 4}
+
+\paragraph{Lemma 1 (modulation).} With $\psi_{a,s}(\boldsymbol{y})\coloneqq e_{s}\odot\phi_{a}(\boldsymbol{y})$,
+\[
+\sum^{c}_{a=1}\boldsymbol{W}_{a}\phi_{a}(\boldsymbol{y})
+=\sum^{c}_{a=1}\sum^{B}_{s=-B}\boldsymbol{C}_{a,s}\,\psi_{a,s}(\boldsymbol{y}).
+\]
+That is, \emph{the band-$B$ denoiser is the $B=0$ denoiser of Section 4 applied to the
+enlarged feature family $\{\psi_{a,s}\}$ of size $c(2B+1)$.} Everything in Section 4
+therefore applies verbatim with the block index $a$ replaced by the pair $(a,s)$ and
+$c$ replaced by $c(2B+1)$; no new optimisation argument is required.
+
+\paragraph{Lemma 2 (moments).} The enlarged moments are sub-blocks of the original
+ones. Writing $\boldsymbol{P}^{(a,b)}=\boldsymbol{F}\boldsymbol{\Sigma}^{(a,b)}_{\phi}\boldsymbol{F}^{*}$
+and $\boldsymbol{Q}^{(a)}=\boldsymbol{F}\boldsymbol{\Sigma}_{\phi_{a},\boldsymbol{x_{0}}}\boldsymbol{F}^{*}$
+as in Section 4, but now keeping off-diagonal entries,
+\[
+f^{H}_{k}\boldsymbol{\Sigma}_{\psi_{a,s},\psi_{b,s'}}f_{k}
+=\boldsymbol{P}^{(a,b)}_{k-s,\,k-s'},
+\qquad
+f^{H}_{k}\boldsymbol{\Sigma}_{\psi_{a,s},\boldsymbol{x_{0}}}f_{k}
+=\boldsymbol{Q}^{(a)}_{k-s,\,k},
+\]
+using $\boldsymbol{E}^{H}_{s}f_{k}=f_{k-s}$. Section 4 needed only the diagonals
+$\boldsymbol{P}^{(a,b)}_{kk}$; band-$B$ needs the off-diagonals out to
+$|\Delta|\le 2B$, i.e. $4B+1$ frequency-offset tensors in one dimension and
+$(4B+1)^{2}$ in two, \emph{not} $(2B+1)^{2}$ and $(2B+1)^{4}$.
+
+\subsection{The per-frequency problem}
+
+Group the parameters at output frequency $k$ into
+$\hat{\mathbf{w}}_{k}=(\hat{w}^{a,s}_{k})_{a,s}\in\mathbb{C}^{c(2B+1)}$ and set, as in
+Section 4, $\boldsymbol{v}_{k}\coloneqq\text{conj}(\hat{\mathbf{w}}_{k})$. Define
+$\mathbf{P}_{k}\in\mathbb{C}^{c(2B+1)\times c(2B+1)}$ and $\mathbf{q}_{k}\in\mathbb{C}^{c(2B+1)}$
+by
+\[
+(\mathbf{P}_{k})_{(a,s),(b,s')}=\boldsymbol{P}^{(a,b)}_{k-s,\,k-s'},
+\qquad
+(\mathbf{q}_{k})_{(a,s)}=\boldsymbol{Q}^{(a)}_{k-s,\,k}.
+\]
+
+\paragraph{Proposition 1.} $\mathbf{P}_{k}$ is Hermitian, and with the involution
+$J:(a,s)\mapsto(a,-s)$,
+\[
+\mathbf{P}_{d-k}=J\,\text{conj}(\mathbf{P}_{k})\,J,
+\qquad
+\mathbf{q}_{d-k}=J\,\text{conj}(\mathbf{q}_{k}).
+\]
+\emph{Proof.} Hermitian: $(\boldsymbol{P}^{(a,b)})^{H}=\boldsymbol{P}^{(b,a)}$ because
+$(\boldsymbol{\Sigma}^{(a,b)}_{\phi})^{\top}=\boldsymbol{\Sigma}^{(b,a)}_{\phi}$.
+Pairing: $\boldsymbol{\Sigma}^{(a,b)}_{\phi}$ is real and $f_{d-k}=\overline{f_{k}}$,
+so $\boldsymbol{P}^{(a,b)}_{-m,-l}=\text{conj}(\boldsymbol{P}^{(a,b)}_{m,l})$. $\square$
+
+Exactly as in Section 4, the realness of $\boldsymbol{W}_{a}$ imposes
+$\text{conj}(\hat{w}^{a,s}_{k})=\hat{w}^{a,-s}_{d-k}$, coupling $k$ with $d-k$ and $s$
+with $-s$; Proposition 1 says the independent solutions at $k$ and $d-k$ satisfy it
+automatically, so the $d$ frequencies may still be optimised separately.
+
+\paragraph{Theorem.} The objective at output frequency $k$ is
+\begin{align*}
+\mathcal{L}^{\text{band}(B)}_{\sigma,k}
+ & =\boldsymbol{v}^{H}_{k}\mathbf{P}_{k}\boldsymbol{v}_{k}-2\text{Re}(\boldsymbol{v}^{H}_{k}\mathbf{q}_{k}),
+\end{align*}
+whose Wirtinger derivative with respect to $\boldsymbol{v}^{H}_{k}$ gives
+$\mathbf{P}_{k}\boldsymbol{v}_{k}-\mathbf{q}_{k}=0$, so
+$\boldsymbol{v}^{*}_{k}=\mathbf{P}^{-1}_{k}\mathbf{q}_{k}$ and
+\[
+\boxed{\ \mathcal{L}^{\text{band}(B)}_{\sigma}
+=\text{Tr}(\boldsymbol{\Sigma}_{\boldsymbol{p_{0}}})-\sum^{d}_{k=1}\mathbf{q}^{H}_{k}\mathbf{P}^{-1}_{k}\mathbf{q}_{k}.\ }
+\]
+This is the Section 4 closed form with the per-frequency block size raised from $c$ to
+$c(2B+1)$; at $B=0$ it \emph{is} the Section 4 formula.
+
+\subsection{Cost and capacity}
+
+The fast path survives. The loss still decouples into $d$ independent solves, now of
+size $c(2B+1)$ rather than $c$, at total cost $O\!\big(d\,c^{3}(2B+1)^{3}\big)$ against
+$O(c^{3}d^{3})$ for an unconstrained $\boldsymbol{W}$ --- a factor $d^{2}/(2B+1)^{3}$.
+The decoupling here is neither by symmetry (as for the equivariant $B=0$ class) nor by
+direct sum: each parameter $\hat{w}^{a,s}_{k}$ enters exactly one output frequency, so
+the normal equations partition by $k$ for any $B$, with or without a group.
+
+Free real parameters: $c(2B+1)d$, against $cd$ at $B=0$ and $cd^{2}$ for a dense
+readout.
+
+\subsection{Two dimensions}
+
+The experiments use $G=\mathbb{Z}_{32}\times\mathbb{Z}_{32}$ acting on $(3,H,W)$ with
+free mixing across the $3$ colour channels, so every statement above holds with:
+characters indexed by $s=(s_{r},s_{c})$ with $|s_{r}|,|s_{c}|\le B$ and
+$R=(2B+1)^{2}$; $\boldsymbol{F}$ the unitary $2$-D DFT; $\boldsymbol{C}_{a,s}$ block
+circulant with circulant blocks; output frequencies $k\in\hat{G}$, $|\hat{G}|=HW$;
+per-frequency blocks of size $3cR$; and readout parameters $3cR\cdot HW=cdR$. The
+aliasing condition becomes $2B+1\le\min(H,W)$, which for $32\times32$ permits
+$B\le15$. It is the exact analogue of the condition $2t-1\le\min(H,W)$ that the
+window of Section 6 must satisfy: in both cases an index set reduced modulo the grid
+must stay injective.
+
+\subsection{Verification}
+
+\texttt{scripts/selftest\_band\_readout.py} checks the boxed formula against a
+brute-force real least squares over the explicit parameters
+$\{\hat{w}^{a,s}_{k}\}$ --- agreement to $\sim10^{-14}$ at
+$(d,c,B)\in\{(12,3,0),(12,3,1),(12,3,2),(16,2,1),(9,4,1)\}$ --- and separately asserts
+Lemma 2, Proposition 1, and that $B=0$ reproduces the Section 4 result.

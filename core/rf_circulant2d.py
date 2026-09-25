@@ -108,6 +108,39 @@ in this project already holds, so it is what the c-sweep must be differenced aga
 split, so 'test' - 'train_resid' is the apples-to-apples generalisation gap.  At lam = 1e-6
 the two agree to ~1e-4 on toy data, but do not assume that at CIFAR scale: the shift is
 proportional to ||W||^2, which grows with c.
+
+LABEL CONDITIONING  (`lab=`, `gam=`, `lab_test=`, `class_centre=`; 2026-09-25)
+------------------------------------------------------------------------------
+Off by default: with lab=None every line below is the unconditional estimator, unchanged.
+
+    phi_a[u] = relu( sum_{ch,v} h_a[ch,v] y[ch,u+v] + <gamma_a, U> )                (gam)
+    D(y)     = sum_a W_a phi_a + beta                                  class_centre=False
+    D(y)     = sum_a W_a phi_a + V U + beta   (= ... + beta_class)     class_centre=True
+
+gamma_a = gam[a] is ONE vector per feature plane, shared by every shift u, so the label shift
+is constant over G and commutes with the group action.  s_a and rho are built from h alone,
+every Stein piece is pointwise in the shifted pre-activation, and the lag Grams average over
+samples that each carry their own shift -- so the implementation is one line in feats(),
+M += <gamma_a, U_n>, and the frequency decoupling and the per-frequency c x c solve are
+untouched (they only ever used that the readout is BCCB, never the structure of Sigma_phi).
+
+class_centre=True adds the FREE readout term V U for one-hot U, i.e. a free per-position
+bias for each class.  Minimising over V and b first replaces every moment by its Schur
+complement on U, which for one-hot U is the POOLED WITHIN-CLASS moment: G and x0 are
+centred by the TRAIN mean of each image's OWN class in q_f and in the data half of P_f, and
+Tr(Sigma) is taken about the class means.  The noise half E[Cov(phi | x0, U)] is already
+conditional and is not touched.  Held out, test images are centred by the TRAIN means of
+their own classes (beta_class is a model parameter, exactly like beta).  Without V U the
+label reaches the output only through phi, and an equivariant readout cannot turn a label
+by itself into a spatial pattern (in the linear limit a BCCB map sends a constant plane to a
+constant plane: one uniform offset per class).  class_centre=True is the nonlinear member of
+the "S" linear class (shared slope, class mean known) that scripts/rf_cond_toll2d_heldout.py
+prices, so band_S(B) there is its linear baseline.
+
+`circulant2d_rf_mmse_bruteforce_cond` is the reference: the free bias is WRITTEN OUT as
+regressors (class indicators, or the constant 1) and solved jointly with the BCCB taps on RAW
+moments, so it checks the elimination-by-centring as well as the algebra.  `selftest2d_cond`
+runs it.  Design notes for the feature-shift half: docs/rf_circulant2d_conditional.md.
 """
 
 import numpy as np
@@ -133,9 +166,99 @@ def lag_full(t):
     return [(m1, m2) for m1 in range(-(t - 1), t) for m2 in range(-(t - 1), t)]
 
 
+# ---------------------------------------------------------------------------------------
+# label conditioning (shared with core.rf_circulant2d_band)
+# ---------------------------------------------------------------------------------------
+
+def _cond_setup(lab, gam, lab_test, class_centre, N, Nt, c, device, dtype):
+    """Validate and normalise the conditioning arguments of the 2-D estimators.
+
+    lab, lab_test : (n,) integer class ids, or (n, n_cls) label vectors U.  class_centre
+                    needs one-hot U (or ids); a general U is accepted as a feature shift only.
+    gam           : (c, n_cls) or None -- one gamma_a per feature PLANE, shared by all shifts.
+    Nt            : test-split size, or None when there is no x0_test.
+
+    Returns {'n_cls', 'bias': [train (c, N), test (c, Nt)], 'cid': [train (N,), test (Nt,)],
+    'count': train class counts}, with None for whatever is switched off.  With lab=None
+    everything is None, which is the unconditional estimator.
+    """
+    out = {'n_cls': None, 'bias': [None, None], 'cid': [None, None], 'count': None}
+    if lab is None:
+        if gam is not None or lab_test is not None or class_centre:
+            raise ValueError("gam, lab_test and class_centre all need lab")
+        return out
+    if (Nt is None) != (lab_test is None):
+        raise ValueError("pass lab_test (the test split's OWN labels) exactly when x0_test "
+                         "is given")
+    if gam is None and not class_centre:
+        raise ValueError("lab given with gam=None and class_centre=False: nothing to "
+                         "condition on")
+    if gam is not None:
+        gam = torch.as_tensor(gam).to(device=device, dtype=dtype)
+        if gam.dim() != 2 or gam.shape[0] != c:
+            raise ValueError(f"gam must be (c={c}, n_cls), got {tuple(gam.shape)}")
+    n_cls = None if gam is None else int(gam.shape[1])
+
+    def as_U(l, n, n_cls):
+        l = torch.as_tensor(l).to(device)
+        if l.dim() == 1:
+            if l.dtype.is_floating_point or l.dtype.is_complex:
+                raise ValueError("1-D lab must hold integer class ids")
+            ids = l.long()
+            if n_cls is None:
+                n_cls = int(ids.max()) + 1
+            if int(ids.min()) < 0 or int(ids.max()) >= n_cls:
+                raise ValueError(f"class ids must lie in [0, {n_cls})")
+            U = torch.nn.functional.one_hot(ids, n_cls).to(dtype)
+        elif l.dim() == 2:
+            U = l.to(dtype)
+            if n_cls is None:
+                n_cls = int(U.shape[1])
+            if U.shape[1] != n_cls:
+                raise ValueError(f"lab has {U.shape[1]} columns, expected n_cls={n_cls}")
+            onehot = bool(((U == 0) | (U == 1)).all()) and bool((U.sum(1) == 1).all())
+            ids = U.argmax(1) if onehot else None
+        else:
+            raise ValueError("lab must be (n,) class ids or (n, n_cls) label vectors")
+        if U.shape[0] != n:
+            raise ValueError(f"lab has {U.shape[0]} rows for {n} images")
+        return U, ids, n_cls
+
+    U_tr, id_tr, n_cls = as_U(lab, N, n_cls)
+    U_te, id_te = None, None
+    if Nt is not None:
+        U_te, id_te, _ = as_U(lab_test, Nt, n_cls)
+    out['n_cls'] = n_cls
+    if gam is not None:
+        # <gamma_a, U_n>: ONE scalar per (plane a, image n), the same at every shift u
+        out['bias'] = [gam @ U_tr.T, None if U_te is None else gam @ U_te.T]
+    if class_centre:
+        if id_tr is None or (Nt is not None and id_te is None):
+            raise ValueError("class_centre needs one-hot labels (or integer class ids)")
+        cnt = torch.bincount(id_tr, minlength=n_cls)
+        if bool((cnt == 0).any()):
+            empty = torch.nonzero(cnt == 0).flatten().tolist()
+            raise ValueError(f"class_centre: class(es) {empty} have no TRAIN image, so their "
+                             f"mean -- a model parameter -- is undefined")
+        out['cid'] = [id_tr, id_te]
+        out['count'] = cnt
+    return out
+
+
+def _class_means(x, cid, cond):
+    """Per-class means of x over dim 0 (the TRAIN split), or None without class_centre.
+    A one-hot matmul rather than index_add_, which is nondeterministic on CUDA."""
+    if cid is None:
+        return None
+    oh = torch.nn.functional.one_hot(cid, cond['n_cls']).to(x.dtype)       # (n, n_cls)
+    s = (oh.T @ x.reshape(x.shape[0], -1)) / cond['count'].to(x.dtype).view(-1, 1)
+    return s.reshape((cond['n_cls'],) + tuple(x.shape[1:]))
+
+
 def circulant2d_rf_mmse(x0, h, sigma, t_band, lam=1e-6, device='cuda',
                         dtype=torch.float64, sample_chunk=None, freq_chunk=32,
-                        super_chunk=2048, verbose=False, x0_test=None):
+                        super_chunk=2048, verbose=False, x0_test=None,
+                        lab=None, gam=None, lab_test=None, class_centre=False):
     """L^circ on G = Z_H x Z_W with free Cin-channel mixing.
 
     x0      : (N, Cin, H, W) real images (NOT flattened).
@@ -145,6 +268,12 @@ def circulant2d_rf_mmse(x0, h, sigma, t_band, lam=1e-6, device='cuda',
               solved on the train moments is scored against the test moments and a dict
               {'train': ..., 'test': ...} is returned instead of a float.  See the module
               docstring for what is and is not held out.
+    lab     : optional labels of x0, (N,) integer class ids or (N, n_cls) vectors U.
+    gam     : optional (c, n_cls); plane a's pre-activation gets <gam[a], U_n> at every u.
+    lab_test: the test split's OWN labels (required with lab when x0_test is given).
+    class_centre : add the free readout term V U (one-hot labels): moments about TRAIN class
+              means.  See "LABEL CONDITIONING" in the module docstring.  lab=None (default)
+              is the unconditional estimator, bit for bit.
     sigma, lam, chunking : as in `circulant_rf_mmse_lag2`.
     """
     x0 = x0.to(device=device, dtype=dtype)
@@ -167,6 +296,11 @@ def circulant2d_rf_mmse(x0, h, sigma, t_band, lam=1e-6, device='cuda',
     nb = int(sample_chunk)
 
     mu = x0.mean(0)                 # TRAIN mean: centres both splits (see docstring)
+    cond = _cond_setup(lab, gam, lab_test, class_centre, N,
+                       None if x0_test is None else x0_test.shape[0], c, device, dtype)
+    bias_tr, bias_te = cond['bias']             # (c, n) label shifts, or None
+    cid_tr, cid_te = cond['cid']                # class ids for class_centre, or None
+    mu_cls = _class_means(x0, cid_tr, cond)     # TRAIN class means: centre both splits
 
     Hc = torch.fft.rfft2(h, dim=(-2, -1)).reshape(c, Cin, F)
     HpT = Hc.conj().permute(2, 1, 0).contiguous()                      # (F, Cin, c)
@@ -184,23 +318,33 @@ def circulant2d_rf_mmse(x0, h, sigma, t_band, lam=1e-6, device='cuda',
                        for (m1, m2) in reps], dim=-1)                  # (c, c, nl)
     psi /= (nrm.view(-1, 1, 1) * nrm.view(1, -1, 1))
 
-    def prep(xs):
+    def prep(xs, bias=None, cid=None):
         """Per-split constants: the rfft2 of the raw images (for the features), the rfft2 of
-        the TRAIN-centred images (for q), and Tr(Sigma) about the train mean."""
+        the TRAIN-centred images (for q), and Tr(Sigma) about the train mean.  Under
+        class_centre each image is centred by the TRAIN mean of its own class instead.
+        `bias` (c, ns) is this split's label shift, added to the pre-activation in feats()."""
         xs = xs.to(device=device, dtype=dtype)
         ns = xs.shape[0]
         Xr = torch.fft.rfft2(xs, dim=(-2, -1)).reshape(ns, Cin, F)
-        vv = torch.fft.rfft2(xs - mu, dim=(-2, -1)).reshape(ns, Cin, F) / sq
-        tr = float(((xs - mu) ** 2).sum() / max(ns, 1))
-        return {'Xr': Xr, 'vh': vv, 'N': ns, 'trace': tr}
+        xc = xs - mu if cid is None else xs - mu_cls[cid]
+        vv = torch.fft.rfft2(xc, dim=(-2, -1)).reshape(ns, Cin, F) / sq
+        tr = float((xc ** 2).sum() / max(ns, 1))
+        del xc
+        oh = (None if cid is None else
+              torch.nn.functional.one_hot(cid, cond['n_cls']).to(dtype))     # (ns, n_cls)
+        return {'Xr': Xr, 'vh': vv, 'N': ns, 'trace': tr, 'bias': bias, 'cid': cid, 'oh': oh}
 
     def feats(sp, n0, n1):
-        """M[a, n, u] = sum_{ch,v} h_a[ch,v] x[n,ch,u+v], plus the pointwise Stein pieces."""
+        """M[a, n, u] = sum_{ch,v} h_a[ch,v] x[n,ch,u+v] (+ <gamma_a, U_n>), plus the pointwise
+        Stein pieces."""
         pr = torch.matmul(sp['Xr'][n0:n1].permute(2, 0, 1), HpT)       # (F, nb, c)
         Mf = pr.permute(2, 1, 0).reshape(c, n1 - n0, H, Wh)
         del pr
         M = torch.fft.irfft2(Mf, s=(H, Wd), dim=(-2, -1)).reshape(c, n1 - n0, D)
         del Mf
+        if sp['bias'] is not None:
+            # THE conditioning line: one scalar per (plane, image), constant over u
+            M.add_(sp['bias'][:, n0:n1].unsqueeze(-1))
         sa = s.view(-1, 1, 1)
         z = M / sa
         Phi = _ndtr(z)
@@ -210,16 +354,23 @@ def circulant2d_rf_mmse(x0, h, sigma, t_band, lam=1e-6, device='cuda',
 
     coef = (1.0, 2.0, 6.0)
 
-    def pass1(sp):
-        """Feature mean, exact-diagonal correction, and the lag tensor B for one split."""
+    def pass1(sp, want_cls=False):
+        """Feature mean, exact-diagonal correction, and the lag tensor B for one split (and,
+        with want_cls, the per-class feature means: the TRAIN split under class_centre)."""
         ns = sp['N']
         gmean = torch.zeros(c, D, dtype=dtype, device=device)
+        gcls = (torch.zeros(c, cond['n_cls'], D, dtype=dtype, device=device)
+                if want_cls else None)                   # class SUMS, (c, n_cls, D)
         R = [torch.zeros(c, c, nl, dtype=dtype, device=device) for _ in range(3)]
         diag_corr = torch.zeros(c, dtype=dtype, device=device)
         for n0 in range(0, ns, nb):
             n1 = min(n0 + nb, ns)
             M, Phi, ph, G, sa = feats(sp, n0, n1)
             gmean += G.sum(1)
+            if gcls is not None:
+                # one-hot matmul (deterministic on CUDA, unlike index_add_).  The 2-D left
+                # operand broadcasts over planes, so G is read in place: no transposed copy.
+                gcls += sp['oh'][n0:n1].T @ G
             C = [sa * Phi, sa * ph / 2.0, -M * ph / 6.0]
             de = ((M ** 2 + sa ** 2) * Phi + M * sa * ph - G ** 2).sum(1)
             fo = (C[0] ** 2).sum(1) + 2.0 * (C[1] ** 2).sum(1) + 6.0 * (C[2] ** 2).sum(1)
@@ -236,6 +387,8 @@ def circulant2d_rf_mmse(x0, h, sigma, t_band, lam=1e-6, device='cuda',
                 del Ci, flat
             del C
         gmean /= ns
+        if gcls is not None:                         # sums -> class MEANS
+            gcls /= cond['count'].to(dtype).view(1, -1, 1)
         diag_corr /= ns
         # Real lag tensor with the Hermite coefficients folded in and the negative lags
         # materialised as transposes, contiguous in the lag axis so the whole per-frequency
@@ -251,14 +404,14 @@ def circulant2d_rf_mmse(x0, h, sigma, t_band, lam=1e-6, device='cuda',
                 del Am
             R[i] = None
         del R
-        return gmean, B, torch.diag_embed(diag_corr.to(cdt))
+        return gmean, B, torch.diag_embed(diag_corr.to(cdt)), gcls
 
-    tr_sp = prep(x0)
-    gmean, B_tr, dgc_tr = pass1(tr_sp)
+    tr_sp = prep(x0, bias_tr, cid_tr)
+    gmean, B_tr, dgc_tr, gcls = pass1(tr_sp, want_cls=cid_tr is not None)
     te_sp = B_te = dgc_te = None
     if x0_test is not None:
-        te_sp = prep(x0_test)
-        _, B_te, dgc_te = pass1(te_sp)          # gmean_test discarded: centring is train's
+        te_sp = prep(x0_test, bias_te, cid_te)
+        _, B_te, dgc_te, _ = pass1(te_sp)       # gmean_test discarded: centring is train's
 
     lm1 = torch.tensor([m[0] for m in full] * 3, device=device, dtype=dtype)
     lm2 = torch.tensor([m[1] for m in full] * 3, device=device, dtype=dtype)
@@ -283,7 +436,10 @@ def circulant2d_rf_mmse(x0, h, sigma, t_band, lam=1e-6, device='cuda',
             for n0 in range(ns0, ns1, nb):
                 n1 = min(n0 + nb, ns1)
                 M, Phi, ph, G, sa = feats(sp, n0, n1)
-                Gc = (G - gmean.unsqueeze(1)).reshape(c, n1 - n0, H, Wd)
+                if sp['cid'] is None:
+                    Gc = (G - gmean.unsqueeze(1)).reshape(c, n1 - n0, H, Wd)
+                else:   # class_centre: the TRAIN mean of each image's own class, both splits
+                    Gc = G.sub_(gcls[:, sp['cid'][n0:n1], :]).reshape(c, n1 - n0, H, Wd)
                 U = torch.fft.rfft2(Gc, dim=(-2, -1)).reshape(c, n1 - n0, F)[:, :, fa:fb] / sq
                 buf[:, n0 - ns0:n1 - ns0, :] = U.permute(2, 1, 0)
                 del M, Phi, ph, G, Gc, U
@@ -375,10 +531,13 @@ def _bccb_basis(Cin, c, H, Wd, device, dtype):
     return E
 
 
-def _kk_moments(xf, Th, sigma, mu, gm):
-    """K x K feature second moment about `gm` and its cross moment with x0 about `mu`."""
+def _kk_moments(xf, Th, sigma, mu, gm, Mb=None):
+    """K x K feature second moment about `gm` and its cross moment with x0 about `mu`.
+    Mb : optional (N, K) pre-activation shift per (sample, explicit row) -- the label term."""
     N = xf.shape[0]
     M = xf @ Th.T
+    if Mb is not None:
+        M = M + Mb
     nr = torch.linalg.norm(Th, dim=1)
     rho = (Th @ Th.T) / torch.outer(nr, nr)
     sa = sigma * nr
@@ -437,6 +596,106 @@ def circulant2d_rf_mmse_bruteforce(x0, h, sigma, lam=1e-6, device='cpu',
     return {'train': train,
             'train_resid': float(trace_p0 - 2.0 * float(b @ w) + float(w @ (A @ w))),
             'test': float(tr_t - 2.0 * float(bt @ w) + float(w @ (At @ w)))}
+
+
+# ---------------------------------------------------------------------------------------
+# brute-force reference for the CONDITIONAL estimator: the free bias written out
+# ---------------------------------------------------------------------------------------
+
+def _readout_U(cid, n_cls, n, device, dtype):
+    """Regressors that carry the readout's FREE bias, made explicit: the constant 1 (the
+    ordinary free per-position bias beta) or, under class_centre, the class indicators
+    (V U + b, i.e. one free beta_class per class)."""
+    if cid is None:
+        return torch.ones(n, 1, device=device, dtype=dtype)
+    return torch.nn.functional.one_hot(cid, n_cls).to(dtype)
+
+
+def _raw_moments(xf, Th, sigma, Mb, Ur):
+    """RAW (uncentred) second moments of z = [phi; Ur] and their cross moments with x0.
+
+    Nothing is centred -- the free bias is a regressor in the solve instead -- so this does
+    not share the structured path's centring step.  The noise part of E[phi phi^T] is
+    E[Cov(phi | x0, U)], the same Stein/Mehler assembly `_kk_moments` uses.
+    """
+    n, d = xf.shape
+    zd = torch.zeros(d, dtype=xf.dtype, device=xf.device)
+    zk = torch.zeros(Th.shape[0], dtype=xf.dtype, device=xf.device)
+    Spp, Sxp, tr, _ = _kk_moments(xf, Th, sigma, zd, zk, Mb)
+    M = xf @ Th.T
+    if Mb is not None:
+        M = M + Mb
+    sa = sigma * torch.linalg.norm(Th, dim=1)
+    z = M / sa
+    G = M * _ndtr(z) + sa * _npdf(z)                          # E[phi | x0, U], (n, K)
+    return {'pp': Spp, 'xp': Sxp, 'tr': tr, 'pu': (G.T @ Ur) / n,
+            'uu': (Ur.T @ Ur) / n, 'xu': (xf.T @ Ur) / n}
+
+
+def _normal_eq(E, m):
+    """A, b of  L(theta) = tr - 2 b.theta + theta^T A theta  over theta = (w, vec B):
+    W = sum_p w_p E_p (d x K) reads the features, a FREE B (d x n_u) reads the regressors
+    Ur.  vec B is row-major (index r * n_u + j)."""
+    A = torch.einsum('pri,ij,qrj->pq', E, m['pp'], E)
+    b = torch.einsum('pri,ri->p', E, m['xp'])
+    d, nu = m['xu'].shape
+    Awb = torch.einsum('pri,ij->prj', E, m['pu']).reshape(E.shape[0], d * nu)
+    Abb = torch.kron(torch.eye(d, dtype=A.dtype, device=A.device), m['uu'])
+    A = torch.cat([torch.cat([A, Awb], 1), torch.cat([Awb.T, Abb], 1)], 0)
+    return A, torch.cat([b, m['xu'].reshape(-1)])
+
+
+def _explicit_fit_and_score(E, reg, mtr, mte=None):
+    """Solve the explicit least squares -- ridge `reg` on the taps ONLY, the free bias is
+    unpenalised because its elimination by centring is exact -- and score it with the
+    structured path's conventions: 'train' ridge-shifted, 'train_resid' / 'test' achieved."""
+    A, b = _normal_eq(E, mtr)
+    P = E.shape[0]
+    Ar = A.clone()
+    Ar[:P, :P] += reg
+    th = torch.linalg.solve(Ar, b)
+    bw = float(b @ th)
+    train = float(mtr['tr'] - bw)
+    if mte is None:
+        return train
+    At, bt = _normal_eq(E, mte)
+    return {'train': train,
+            'train_resid': float(mtr['tr'] - 2.0 * bw + float(th @ (A @ th))),
+            'test': float(mte['tr'] - 2.0 * float(bt @ th) + float(th @ (At @ th)))}
+
+
+def circulant2d_rf_mmse_bruteforce_cond(x0, h, sigma, lam=1e-6, device='cpu',
+                                        dtype=torch.float64, x0_test=None, lab=None,
+                                        gam=None, lab_test=None, class_centre=False):
+    """Reference for the conditional estimator -- and, with lab=None, a SECOND reference for
+    the unconditional one.  The readout's free bias is written out (B U over the class
+    indicators under class_centre, over the constant 1 otherwise) and solved jointly with the
+    BCCB taps on RAW moments, instead of being eliminated by centring.  Toy sizes only.
+    """
+    x0 = x0.to(device=device, dtype=dtype)
+    h = h.to(device=device, dtype=dtype)
+    N, Cin, H, Wd = x0.shape
+    c = h.shape[0]
+    D = H * Wd
+    d = Cin * D
+    cond = _cond_setup(lab, gam, lab_test, class_centre, N,
+                       None if x0_test is None else x0_test.shape[0], c, device, dtype)
+    Th = _explicit_theta(h, H, Wd).to(device=device, dtype=dtype)       # (K, d), a outermost
+
+    def mom(xs, bias, cid):
+        n = xs.shape[0]
+        xf = xs.to(device=device, dtype=dtype).reshape(n, d)
+        # explicit row (a, u) carries <gamma_a, U_n> for EVERY u: the replication across
+        # shifts that keeps the structured path equivariant, written out
+        Mb = None if bias is None else bias.T.repeat_interleave(D, dim=1)
+        return _raw_moments(xf, Th, sigma, Mb,
+                            _readout_U(cid, cond['n_cls'], n, device, dtype))
+
+    E = _bccb_basis(Cin, c, H, Wd, device, dtype)
+    reg = lam * torch.einsum('pri,qri->pq', E, E)
+    mtr = mom(x0, cond['bias'][0], cond['cid'][0])
+    mte = None if x0_test is None else mom(x0_test, cond['bias'][1], cond['cid'][1])
+    return _explicit_fit_and_score(E, reg, mtr, mte)
 
 
 def selftest2d(seed=0, verbose=True, device=None):
@@ -505,5 +764,114 @@ def selftest2d(seed=0, verbose=True, device=None):
     return ok
 
 
+def _toy_cond(rng, n, Cin, H, Wd, A, shift, scale, offs, p, dev):
+    """The selftest2d toy draw plus a LABEL-DEPENDENT mean pattern offs[y] and scale, so class
+    means differ and the within-class covariance depends on the class -- a dropped label, or
+    a centring by the wrong mean, cannot pass.  p = class probabilities (None = uniform).
+    Returns (x0, integer labels)."""
+    d = Cin * H * Wd
+    y = rng.choice(offs.shape[0], size=n, p=p)
+    z = rng.standard_normal((n, d))
+    z = z + 0.4 * rng.standard_normal((n, 1))
+    raw = ((z ** 3) / 3.0 @ A.T) * (scale * (1.0 + 0.25 * y))[:, None]
+    raw = raw + np.linspace(-1.0, 1.0, d)[None, :] + shift + offs[y]
+    return (torch.tensor(raw.reshape(n, Cin, H, Wd), dtype=torch.float64, device=dev),
+            torch.tensor(y, dtype=torch.long, device=dev))
+
+
+def selftest2d_cond(seed=0, verbose=True, device=None):
+    """Label conditioning against independent references.  All must pass:
+
+    (a) BRUTE FORCE with the free bias written out (`circulant2d_rf_mmse_bruteforce_cond`),
+        in-sample and held out, for gamma + VU, gamma alone and VU alone, n_cls = 3, 2, 5,
+        integer and one-hot labels, a test split with a DIFFERENT class mix.  The structured
+        path never forms V -- it centres -- so this checks the elimination, the label shift,
+        the train-class-mean centring of the test split and the frequency decoupling at once.
+    (b) that reference with lab=None equals the centred brute force `selftest2d` trusts.
+    (c) gam = 0 with nontrivial labels reproduces the unconditional estimator exactly.
+    (d) one class: class_centre=True equals class_centre=False (class mean = global mean).
+    (e) lam = 0, test == train, class_centre: the held-out loss collapses onto in-sample.
+    """
+    dev = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+    ok = True
+    keys = ('train', 'train_resid', 'test')
+
+    def rel_of(a, b):
+        return max(abs(a[k] - b[k]) / max(abs(b[k]), 1e-12) for k in keys)
+
+    def report(tag, rel, tol):
+        nonlocal ok
+        good = rel < tol
+        ok &= good
+        if verbose:
+            print(f"  {tag:<66} rel={rel:.1e} {'OK' if good else 'FAIL'}", flush=True)
+
+    kw = dict(lam=1e-6, device=dev, sample_chunk=7, freq_chunk=3, super_chunk=13)
+    cases = ((4, 4, 2, 2, 2, 400, 1.1, 3),
+             (6, 6, 1, 2, 3, 500, 0.9, 2),
+             (4, 4, 3, 2, 2, 450, 0.6, 5))
+    for (H, Wd, Cin, c, t, N, sig, ncls) in cases:
+        rng = np.random.default_rng(seed)
+        d = Cin * H * Wd
+        A = rng.standard_normal((d, d)) * 0.5
+        offs = rng.standard_normal((ncls, d)) * 0.8
+        x0, y0 = _toy_cond(rng, N, Cin, H, Wd, A, 0.0, 1.0, offs, None, dev)
+        p_te = rng.dirichlet(np.full(ncls, 4.0))            # a DIFFERENT class mix on test
+        xt, yt = _toy_cond(rng, N // 2 + 37, Cin, H, Wd, A, 0.25, 1.15, offs, p_te, dev)
+        hh = torch.zeros(c, Cin, H, Wd, dtype=torch.float64, device=dev)
+        hh[:, :, :t, :t] = torch.tensor(
+            rng.standard_normal((c, Cin, t, t)) / np.sqrt(Cin * t * t),
+            dtype=torch.float64, device=dev)
+        gg = torch.tensor(rng.standard_normal((c, ncls)) / np.sqrt(ncls),
+                          dtype=torch.float64, device=dev)
+        oh0 = torch.nn.functional.one_hot(y0, ncls).to(torch.float64)
+        oht = torch.nn.functional.one_hot(yt, ncls).to(torch.float64)
+        tag0 = f"{H}x{Wd} Cin={Cin} c={c} t={t} sigma={sig} n_cls={ncls}"
+        for mode, g_, cc, l0, lt in (('gamma+VU', gg, True, y0, yt),
+                                      ('gamma+VU one-hot', gg, True, oh0, oht),
+                                      ('gamma only', gg, False, y0, yt),
+                                      ('VU only', None, True, y0, yt)):
+            new = circulant2d_rf_mmse(x0, hh, sig, t, x0_test=xt, lab=l0, gam=g_,
+                                      lab_test=lt, class_centre=cc, **kw)
+            ref = circulant2d_rf_mmse_bruteforce_cond(x0, hh, sig, lam=1e-6, device=dev,
+                                                      x0_test=xt, lab=l0, gam=g_,
+                                                      lab_test=lt, class_centre=cc)
+            report(f"(a) {tag0} {mode}", rel_of(new, ref), 1e-9)
+        old = circulant2d_rf_mmse_bruteforce(x0, hh, sig, lam=1e-6, device=dev, x0_test=xt)
+        alt = circulant2d_rf_mmse_bruteforce_cond(x0, hh, sig, lam=1e-6, device=dev,
+                                                  x0_test=xt)
+        report(f"(b) {tag0} explicit-bias ref == centred ref", rel_of(alt, old), 1e-9)
+        a = circulant2d_rf_mmse(x0, hh, sig, t, x0_test=xt, **kw)
+        b = circulant2d_rf_mmse(x0, hh, sig, t, x0_test=xt, lab=y0,
+                                gam=torch.zeros_like(gg), lab_test=yt, **kw)
+        report(f"(c) {tag0} gam=0 == unconditional", rel_of(b, a), 1e-13)
+        z0, zt = torch.zeros_like(y0), torch.zeros_like(yt)
+        a = circulant2d_rf_mmse(x0, hh, sig, t, x0_test=xt, lab=z0, gam=gg[:, :1],
+                                lab_test=zt, class_centre=True, **kw)
+        b = circulant2d_rf_mmse(x0, hh, sig, t, x0_test=xt, lab=z0, gam=gg[:, :1],
+                                lab_test=zt, class_centre=False, **kw)
+        report(f"(d) {tag0} one class: VU == no VU", rel_of(a, b), 1e-11)
+
+    # (e) lam = 0 with test == train pins the held-out assembly under class centring
+    rng = np.random.default_rng(seed + 5)
+    H = Wd = 6; Cin = 2; c = 3; t = 2; N = 400; ncls = 3
+    d = Cin * H * Wd
+    A = rng.standard_normal((d, d)) * 0.5
+    offs = rng.standard_normal((ncls, d)) * 0.8
+    x0, y0 = _toy_cond(rng, N, Cin, H, Wd, A, 0.0, 1.0, offs, None, dev)
+    hh = torch.zeros(c, Cin, H, Wd, dtype=torch.float64, device=dev)
+    hh[:, :, :t, :t] = torch.tensor(rng.standard_normal((c, Cin, t, t)) / np.sqrt(Cin * t * t),
+                                    dtype=torch.float64, device=dev)
+    gg = torch.tensor(rng.standard_normal((c, ncls)) / np.sqrt(ncls), dtype=torch.float64,
+                      device=dev)
+    r = circulant2d_rf_mmse(x0, hh, 0.8, t, lam=0.0, device=dev, sample_chunk=11,
+                            freq_chunk=4, super_chunk=23, x0_test=x0, lab=y0, gam=gg,
+                            lab_test=y0, class_centre=True)
+    report("(e) test==train, lam=0, gamma+VU",
+           abs(r['test'] - r['train']) / max(abs(r['train']), 1e-12), 1e-9)
+    return ok
+
+
 if __name__ == '__main__':
     print("selftest2d:", "PASS" if selftest2d() else "FAIL")
+    print("selftest2d_cond:", "PASS" if selftest2d_cond() else "FAIL")
