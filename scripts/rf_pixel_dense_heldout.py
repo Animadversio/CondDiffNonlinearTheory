@@ -83,7 +83,8 @@ OUT = os.environ.get('OUT', 'tables/rf_pixel_dense_heldout.npz')
 # ---------------------------------------------------------------------------
 # moments
 # ---------------------------------------------------------------------------
-def stein_moments(X0, Theta, sigma, mu=None, gmean=None):
+def stein_moments(X0, Theta, sigma, mu=None, gmean=None, *, lab=None, gam=None,
+                  class_centre=False):
     """Noise-analytic moments of the relu features about GIVEN centres.
 
     Returns (Cov, Sig, tr, mu, gmean) with, writing phi = relu(Theta y), y = x0 + sigma z,
@@ -108,15 +109,37 @@ def stein_moments(X0, Theta, sigma, mu=None, gmean=None):
     its exact value E[relu^2] - c0^2.
     """
     N, k = X0.shape[0], Theta.shape[0]
+    cid = None
+    if lab is not None:
+        cid = lab if lab.ndim == 1 else torch.argmax(lab, dim=1)
+        cid = cid.to(device=X0.device, dtype=torch.long)
+    if gam is not None and cid is None:
+        raise ValueError("gam needs lab")
+    if class_centre and cid is None:
+        raise ValueError("class_centre needs lab")
     if mu is None:
-        mu = X0.mean(0)
+        if class_centre:
+            nc = int(gam.shape[1]) if gam is not None else int(cid.max()) + 1
+            cnt = torch.bincount(cid, minlength=nc)
+            if bool((cnt == 0).any()):
+                raise ValueError("every class must occur in the training split")
+            mu = torch.stack([X0[cid == q].mean(0) for q in range(nc)])
+        else:
+            mu = X0.mean(0)
     s = sigma * torch.linalg.norm(Theta, dim=1)                       # (k,)
     M = X0 @ Theta.T                                                  # (N, k)
+    if gam is not None:
+        M = M + gam[:, cid].T
     G = _c0_t(M, s[None, :])                                          # E_z[phi]
     if gmean is None:
-        gmean = G.mean(0)
-    Cov = (X0 - mu).T @ (G - gmean) / N
-    tr = float(((X0 - mu) ** 2).sum() / N)
+        if class_centre:
+            gmean = torch.stack([G[cid == q].mean(0) for q in range(mu.shape[0])])
+        else:
+            gmean = G.mean(0)
+    Xc = X0 - (mu[cid] if class_centre else mu)
+    Gc = G - (gmean[cid] if class_centre else gmean)
+    Cov = Xc.T @ Gc / N
+    tr = float((Xc ** 2).sum() / N)
 
     z = M / torch.clamp(s[None, :], min=1e-12)
     Phi_z = _ndtr(z); phi_z = _npdf(z)
@@ -128,7 +151,6 @@ def stein_moments(X0, Theta, sigma, mu=None, gmean=None):
     diag_noise = (E_phi_sq - G ** 2).mean(0)                          # exact Var_z, mean_n
     del E_phi_sq, Phi_z, phi_z, M
 
-    Gc = G - gmean
     del G
     Sig = Gc.T @ Gc / N                                               # data block
     del Gc
@@ -154,7 +176,8 @@ def stein_moments(X0, Theta, sigma, mu=None, gmean=None):
     return Cov, Sig, tr, mu, gmean
 
 
-def split_losses(Xtr, Xte, Theta, sigma, lam=LAM, want_model=False):
+def split_losses(Xtr, Xte, Theta, sigma, lam=LAM, want_model=False, *, lab=None,
+                 gam=None, lab_test=None, class_centre=False):
     """Solve the dense readout on train, score it on train and on the held-out split.
 
     Returns (L_stored, L_train_resid, L_test).  L_stored is what the existing in-sample
@@ -162,7 +185,8 @@ def split_losses(Xtr, Xte, Theta, sigma, lam=LAM, want_model=False):
     the same W.  They differ by exactly lam ||W||^2.
     """
     k = Theta.shape[0]
-    Cov, Sig, tr, mu, gmean = stein_moments(Xtr, Theta, sigma)
+    Cov, Sig, tr, mu, gmean = stein_moments(
+        Xtr, Theta, sigma, lab=lab, gam=gam, class_centre=class_centre)
     Sl = Sig + lam * torch.eye(k, device=DEV, dtype=DT)
     W = torch.linalg.solve(Sl, Cov.T).T                               # (d, k) = Cov Sl^-1
     del Sl
@@ -172,7 +196,9 @@ def split_losses(Xtr, Xte, Theta, sigma, lam=LAM, want_model=False):
     del Cov, Sig
     torch.cuda.empty_cache()
 
-    Cov_te, Sig_te, tr_te, _, _ = stein_moments(Xte, Theta, sigma, mu, gmean)
+    Cov_te, Sig_te, tr_te, _, _ = stein_moments(
+        Xte, Theta, sigma, mu, gmean, lab=lab_test, gam=gam,
+        class_centre=class_centre)
     L_test = (tr_te - 2.0 * float((W * Cov_te).sum())
               + float(((W @ Sig_te) * W).sum()))
     del Cov_te, Sig_te
