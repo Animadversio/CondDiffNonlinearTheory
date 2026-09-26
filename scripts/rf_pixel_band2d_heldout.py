@@ -81,11 +81,11 @@ def cell_key(sg, c, B):
 def sizing(c, B):
     """Pick freq_chunk / super_chunk from a GPU budget.
 
-    The binders, all of which are live at once on the held-out path because train and test
-    moments are both resident:
-      Bc         nD * c^2 * 3(2t-1)^2 * 16 B  per split   (Delta-resolved Stein lag tensor)
-      P, q       nf * K^2 * 16 B              per split,  K = c(2B+1)^2
-      buf        nf * ns * K * 16 B           one split at a time
+    Frequency-pass storage (fp64 / complex128):
+      Bc         nD * c^2 * (2t-1)^2 * 16 B  per split, both splits resident
+      P          nf * K^2 * 16 B             one split at a time, K = c(2B+1)^2
+      eye        K^2 * 16 B                 persistent identity, plus solve temporaries
+      buf        nf * ns * K * 16 B          one split at a time
     nD = |box(2B) half| = ((2*(2B)+1)^2 + 1) / 2.
 
     *** THE FACTOR 2 ON Bc IS DELIBERATE AND STAYS (2026-09-24, michimin). ***  A two-pass
@@ -93,29 +93,20 @@ def sizing(c, B):
     twice; this project prioritises runtime over memory.  Do not remove it without being
     asked.
 
-    What DID change is the pass-1 transient: `pass1` now assembles Bc one Delta-slice at a
-    time and frees that slice's Stein tensor as it goes, so the assembly no longer peaks at
-    ~1.5x its own steady state (the old `del Tre, Tim` sat after the whole loop, and slices
-    of a monolithic tensor are views that free nothing).
-
-    *** MEASURED, NOT ESTIMATED (2026-09-24, A/B against the committed code, 13x13 t=7 B=2
-    held out, torch.cuda.max_memory_allocated).  PEAK 2.51x -> 2.12x of ONE split's Bc. ***
-      c=160  Bc/split  7.930 GiB   19.899 -> 16.863 GiB   saved 3.04 = 0.383x Bc
-      c=224  Bc/split 15.542 GiB   38.971 -> 33.020 GiB   saved 5.95 = 0.383x Bc
-    Converged: the same 0.383x at both c, and losses bit-identical.  That is BELOW the 0.52x
-    the transient is worth on paper, because the space it frees is partly refilled by the
-    frequency loop's own temporaries -- the global peak does not fall by the whole transient.
-    ==> quote 0.38x, not 0.52x.
-    ⚠ Do NOT A/B this at small c: a ~2.2 GiB config-INDEPENDENT floor (feature tensors +
-    cuBLAS workspace) dominates the peak below c~128 and hides the saving entirely.  It read
-    as a flat no-op at c=48 and c=128 before I scaled c until Bc was actually the binder.
+    Hermite orders are summed before Bc storage, reducing its size by three.  The earlier
+    measured 2.12x-one-split peak multiplier applied to the UNCOMPACTED Bc and must not be
+    applied to the new size.  Pass 1 still holds all three orders in real/imaginary lag
+    accumulators: (2*nD-1) * 3 * n_lag_reps * c^2 * 8 bytes, plus the train Bc during the
+    test pass, rolled feature buffers and one Delta-slice during assembly.  Reducing nf
+    cannot fix a pass-1 OOM.  This remains a frequency-chunk heuristic, not a peak-memory
+    guarantee; leave headroom for pass 1, features and solver workspaces.
     """
     nG = (2 * B + 1) ** 2
     K = c * nG
     nD = ((4 * B + 1) ** 2 + 1) // 2
-    fixed = 2 * nD * c * c * 3 * (2 * T2 - 1) ** 2 * 8 * 2      # Bc, both splits (complex)
+    fixed = 2 * nD * c * c * (2 * T2 - 1) ** 2 * 16      # compact Bc, both splits
     left = max(2e9, BUDGET - fixed)
-    nf = int(min(16, max(1, left / (2 * K * K * 16 * 2.2))))     # P for both splits + slack
+    nf = int(min(16, max(1, left / (2 * K * K * 16 * 2.2))))     # P, identity, solve slack
     ns = int(min(max(NIMG, NTEST), max(256, 3e9 / (nf * K * 16))))
     return nf, ns
 

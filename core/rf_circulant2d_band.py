@@ -69,6 +69,12 @@ than ~81x the plain model:
     T_ab(m,-Delta) = conj( T_ab(m,Delta) )            (C is real)  -> 13 of 25 Deltas at B=1
     T_ab(-m,Delta) = exp(2 pi i <Delta,m>) T_ba(m,Delta)           -> half the lags
 
+The Fourier phase does not depend on the Hermite order n.  Store the sum
+    B_ab(m,Delta) = sum_n coef_n psi_ab(m)^n T^n_ab(m,Delta)
+as (c,c,nL), rather than keeping three (c,c,nL) order blocks.  This cuts the stored noise
+tensors and each subsequent phase contraction by three, with only floating-point summation
+order changing.  The pass-1 lag accumulators still keep the orders separate until assembly.
+
 THE EXACT-DIAGONAL CORRECTION IS ALSO Delta-DEPENDENT, and this is the easiest thing in the
 whole file to get wrong.  The plain model only ever needs the MEAN over u of the per-position
 correction delta[a,u], because a diagonal matrix contributes (1/|G|) sum_u delta[a,u] to every
@@ -313,31 +319,27 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
         gmean /= ns
         if gcls is not None:                         # sums -> class MEANS
             gcls /= cond['count'].to(dtype).view(1, -1, 1)
-        # *** ASSEMBLE Bc ONE Delta-SLICE AT A TIME AND FREE THAT SLICE'S T AS WE GO. ***
-        # Both are lists, so the slices are independent allocations: the peak over the
-        # assembly is max_d [ d*|Bc slice| + (nD-d)*|T slice| ], and |T slice| < |Bc slice|
-        # (ratio 2*3*nl*8 / (3*nL*16) ~ 0.5), so the peak is just the finished Bc instead of
-        # Bc + T.  With one monolithic tensor for each, `del Tre[dI]` would free nothing --
-        # a slice is a view -- and Bc would have to be allocated in full up front.
-        # MEASURED A/B vs the pre-2026-09-24 code (13x13 t=7 B=2, held out): whole-call peak
-        # 2.51x -> 2.12x of one split's Bc, i.e. 0.383x Bc saved, identical at c=160 and 224.
-        # That is under the 0.5x above because the frequency loop's own temporaries partly
-        # refill the freed space.  Losses are bit-identical -- this changes allocation and
-        # freeing only, never a summation order.
+        # Assemble one independent Delta-slice and release its lag accumulators as we go.
+        # All Hermite orders have the same Fourier phase, so sum them HERE rather than
+        # storing three copies of the lag axis.  This changes summation order, not the
+        # order-3 approximation or the exact-diagonal correction below.
+        # Tre/Tim are now larger than the compact Bc: during the test pass the resident
+        # train Bc plus test Tre/Tim can exceed the final pair of compact Bc tensors.
+        # Consequently a 3x Bc reduction is NOT a 3x whole-call peak-memory reduction.
         Bc = []
         for dI, (d1, d2) in enumerate(dreps):
-            Bd = torch.zeros(c, c, 3 * nL, dtype=cdt, device=device)
+            Bd = torch.zeros(c, c, nL, dtype=cdt, device=device)
             for i in range(3):
                 for li, (m1, m2) in enumerate(reps):
                     Tm = (Tre[dI][i, li].to(cdt) if Tim[dI] is None
                           else torch.complex(Tre[dI][i, li], Tim[dI][i, li])) / ns
                     Am = (psi[:, :, li] ** (i + 1)) * Tm
-                    Bd[:, :, i * nL + pos[(m1, m2)]] = coef[i] * Am
+                    Bd[:, :, pos[(m1, m2)]].add_(coef[i] * Am)
                     if (m1, m2) != (0, 0):
                         # psi_ab(-m)^n T_ab(-m,D) = exp(2 pi i <D,m>) [psi^n T]_ba(m,D)
                         pf = np.exp(2j * np.pi * (d1 * m1 / H + d2 * m2 / Wd))
-                        Bd[:, :, i * nL + pos[(-m1, -m2)]] = \
-                            coef[i] * torch.tensor(pf, dtype=cdt, device=device) * Am.T
+                        Bd[:, :, pos[(-m1, -m2)]].add_(
+                            coef[i] * torch.tensor(pf, dtype=cdt, device=device) * Am.T)
                     del Tm, Am
             Tre[dI] = None
             Tim[dI] = None
@@ -361,8 +363,8 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
         te_sp = prep(x0_test, bias_te, cid_te)
         _, B_te, dgc_te, _ = pass1(te_sp)
 
-    lm1 = torch.tensor([m[0] for m in full] * 3, device=device, dtype=dtype)
-    lm2 = torch.tensor([m[1] for m in full] * 3, device=device, dtype=dtype)
+    lm1 = torch.tensor([m[0] for m in full], device=device, dtype=dtype)
+    lm2 = torch.tensor([m[1] for m in full], device=device, dtype=dtype)
     eye = torch.eye(K, dtype=cdt, device=device)
 
     f1i = (torch.arange(F, device=device, dtype=dtype) // Wh)
@@ -415,7 +417,7 @@ def circulant2d_band_rf_mmse(x0, h, sigma, t_band, B, lam=1e-6, device='cuda',
         for rp, (b1, b2) in enumerate(offs):
             ang = (-2.0 * np.pi) * (torch.outer(f1i[fa:fb] - b1, lm1) / H
                                     + torch.outer(f2i[fa:fb] - b2, lm2) / Wd)
-            phs.append(torch.complex(torch.cos(ang), torch.sin(ang)))       # (nf, 3nL)
+            phs.append(torch.complex(torch.cos(ang), torch.sin(ang)))       # (nf, nL)
             del ang
         for r in range(nG):
             for rp in range(nG):
@@ -737,7 +739,7 @@ def selftest_band(seed=0, verbose=True, device=None):
                   f"test {new['test']:.8f} ({rel['test']:.1e})  "
                   f"{'OK' if good else 'FAIL'}", flush=True)
 
-    # (b) B = 0 must reproduce the plain 2-D estimator bit for bit
+    # (b) B = 0 must reproduce the plain 2-D estimator to floating-point tolerance
     rng = np.random.default_rng(seed + 3)
     H = Wd = 8; Cin = 3; c = 3; t = 3; N = 500
     d = Cin * H * Wd
