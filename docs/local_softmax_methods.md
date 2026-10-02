@@ -250,10 +250,10 @@ same seed:
 
 | method | FFHQ64 vs EDM | FFHQ64 vs U-net 30k | FFHQ64 vs U-net 10k | AFHQ64 vs EDM | AFHQ64 vs full |
 |---|---|---|---|---|---|
-| Lukoianov | 0.755 | 0.606 | 0.754 | 0.643 | 0.490 |
-| Wiener B | 0.740 | 0.586 | 0.768 | 0.651 | 0.492 |
-| LS | 0.628 | 0.484 | 0.673 | 0.525 | 0.349 |
-| global softmax | −0.04 | −0.13 | −0.10 | −0.31 | −0.50 |
+| Lukoianov | 0.755 | 0.754 | 0.606 | 0.643 | 0.490 |
+| Wiener B | 0.740 | 0.768 | 0.586 | 0.651 | 0.492 |
+| LS | 0.628 | 0.673 | 0.484 | 0.525 | 0.349 |
+| global softmax | −0.04 | −0.10 | −0.13 | −0.31 | −0.50 |
 
 **Sampling findings:**
 - **None of the analytic samplers produce realistic images.** Wiener, Lukoianov and LS give
