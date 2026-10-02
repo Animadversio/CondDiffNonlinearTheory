@@ -49,7 +49,11 @@ T = lambda p: os.path.join(ROOT, 'tables', p)
 YLIN = '--ylinear' in sys.argv
 # --dataset cifar10 (default) | ffhq32 | afhq32   (tables from scripts/run_local_softmax_faces.sh)
 DS = sys.argv[sys.argv.index('--dataset') + 1] if '--dataset' in sys.argv else 'cifar10'
-DSNAME = {'cifar10': 'CIFAR-10', 'ffhq32': 'FFHQ 32×32', 'afhq32': 'AFHQ 32×32'}[DS]
+DSNAME = {'cifar10': 'CIFAR-10', 'ffhq32': 'FFHQ 32×32', 'afhq32': 'AFHQ 32×32',
+          'ffhq64': 'FFHQ 64×64', 'afhq64': 'AFHQ 64×64'}[DS]
+RES = 64 if DS.endswith('64') else 32
+GK = str(2 * RES - 1)              # LS window covering the whole image = the global softmax
+NFULL = {'ffhq32': '70k', 'ffhq64': '70k', 'afhq32': '15.8k', 'afhq64': '15.8k'}.get(DS, '')
 OUT = os.path.join(ROOT, 'figures', 'local_softmax_vs_sigma' + ('' if DS == 'cifar10' else f'_{DS}')
                    + ('_ylin' if YLIN else ''))
 SIGS = [0.0002, 0.0005, 0.001, 0.002,                              # very low, 2026-09-28
@@ -91,11 +95,20 @@ if DS == 'cifar10':        # CIFAR's train = eval curve is the oracle table (all
 NETS = ({'edm': ('test:edm-uncond-vp|{}', 'EDM U-net (VP, 50k train)', 'EDM', 's', True, '-')}
         if DS == 'cifar10' else {})
 NETDEF = {
-    'unet-full_longtrain': ('U-net, all 70k, 250k steps (test seen)', 'U-net 70k long', 's', True, '-'),
+    'unet-edm':            (f'EDM U-net (official, all {NFULL}; test seen)', 'EDM', 's', True, '-'),
+    'unet-full_longtrain': (f'U-net, all {NFULL}, long (test seen)', f'U-net {NFULL} long', 's', True, '-'),
+    'unet-30000_longtrain_split1': ('U-net, 30k [0:30k], 250k steps, held out', 'U-net 30k long',
+                                    'o', True, (0, (4, 2))),
+    'unet-10000_longtrain_split1': ('U-net, 10k = the pool, 250k steps, held out', 'U-net 10k long',
+                                    'o', False, (0, (1.5, 1.5))),
     'unet-full':           ('U-net, all images, 50k steps (test seen)', 'U-net full', 's', True, '-'),
     'unet-30000_split1':   ('U-net, 30k [0:30k], held out', 'U-net 30k', 'o', True, (0, (4, 2))),
     'unet-10000_split1':   ('U-net, 10k = the pool, held out', 'U-net 10k', 'o', False, (0, (1.5, 1.5))),
 }
+# which stored networks to DRAW (all stay in the .csv): '--nets a,b' or a per-dataset default.
+# FFHQ64 stores six; drawn by default = best held-out (30k, 50k steps), pool-matched 10k, EDM.
+PLOT_NETS = (sys.argv[sys.argv.index('--nets') + 1].split(',') if '--nets' in sys.argv else
+             {'ffhq64': ['unet-30000_split1', 'unet-10000_split1', 'unet-edm']}.get(DS))
 for tag in (list(np.asarray(A.get('meta_NETS', [])).ravel()) if DS != 'cifar10' else []):
     lab, short, mk, filled, ls = NETDEF[str(tag)]
     NETS[str(tag)] = (f'test:{tag}|{{}}', lab, short, mk, filled, ls)
@@ -111,8 +124,12 @@ def params(store, arm, s):
     return None, []
 
 
-BASE = {'ls': {'3', '5', '7', '9', '11', '13', '15', '19', '23', '31'},
-        'luk': {f'{t}|global' for t in ('0.005', '0.01', '0.02', '0.05', '0.1', '0.2')}}
+BASE = {'ls': ({'3', '5', '7', '9', '11', '13', '15', '19', '23', '31'} if RES == 32 else
+               {'1', '3', '5', '7', '9', '11', '15', '19', '23', '31', '39', '47', '63'}),
+        # 64 px: sigma >= 0.02 ran the reduced grid (scripts/run_local_softmax_64.sh)
+        'luk': {f'{t}|global' for t in (('0.005', '0.01', '0.02', '0.05', '0.1', '0.2')
+                                        if RES == 32 else ('0.02', '0.05', '0.1', '0.2', '0.3'))},
+        'lukB': {f'{t}|global' for t in ('0.05', '0.1', '0.2')}}
 
 
 def selected(store, arm, s, exclude=()):
@@ -134,11 +151,19 @@ def mean_se(v):
 
 
 rows = []   # (curve, sigma, mse, se, ratio_to_wiener, ratio_se, param, n_images)
+# RATIO REFERENCE: the pool Wiener, unless a full-rank variant-B Wiener exists (64 px): there
+# the pool covariance has rank 9999 < d, so the pool Wiener floors at ~0.4 per image as
+# sigma -> 0 and would make every other curve look good at low sigma.
+REF = 'wienerB' if any(k.startswith('test:wienerB|') for k in A) else 'wiener'
 for s in SIGS:
-    w = fetch(A, 'test:wiener|{}', s)
+    w0 = fetch(A, 'test:wiener|{}', s)
+    w = fetch(A, f'test:{REF}|{{}}', s)
     if w is not None:
-        rows.append(('linear', s, *mean_se(w), 1.0, 0.0, '', len(w)))
-        for curve, arm, ex in (('ls', 'ls', ('63',)), ('luk', 'luk', ())):
+        rows.append(('linear', s, *mean_se(w0), float(w0.mean() / w.mean()),
+                     float(np.std(w0 - w, ddof=1) / np.sqrt(len(w)) / w.mean()), '', len(w0)))
+        if REF == 'wienerB':
+            rows.append(('linearB', s, *mean_se(w), 1.0, 0.0, '', len(w)))
+        for curve, arm, ex in (('ls', 'ls', (GK,)), ('luk', 'luk', ()), ('lukB', 'lukB', ())):
             r = selected(A, arm, s, ex)
             if r:
                 p, v = r
@@ -146,7 +171,7 @@ for s in SIGS:
                 rows.append((curve, s, *mean_se(v), float(v.mean() / w.mean()),
                              float(np.std(v - w, ddof=1) / np.sqrt(len(v)) / w.mean()),
                              p, len(v)))
-        for curve, fmt in [('global_heldout', 'test:ls|{}|63')] + [
+        for curve, fmt in [('global_heldout', 'test:ls|{}|' + GK)] + [
                 (k, v[0]) for k, v in NETS.items()]:
             v = fetch(A, fmt, s)
             if v is not None:
@@ -154,6 +179,7 @@ for s in SIGS:
                              float(np.std(v - w, ddof=1) / np.sqrt(len(v)) / w.mean()),
                              '', len(v)))
     gi, wi = fetch(A, 'test:global_insample|{}', s), fetch(A, 'test:wiener_insample|{}', s)
+    # (train = eval keeps its own in-sample POOL Wiener as reference: it is scored in-sample)
     if gi is not None:      # faces: first 1000 POOL images, pool contains each of them
         rows.append(('global_insample', s, *mean_se(gi), float(gi.mean() / wi.mean()),
                      float('nan'), '', len(gi)))
@@ -165,7 +191,7 @@ for s in SIGS:
 
 # held-out global cross-check: subset LS k=63 vs the full-test oracle table
 for s in SIGS:
-    v, o = fetch(A, 'test:ls|{}|63', s), fetch(O, 'oracle|{}', s)
+    v, o = fetch(A, 'test:ls|{}|' + GK, s), fetch(O, 'oracle|{}', s)
     if v is not None and o is not None:
         print(f"  global held-out sigma={s}: subset {v.mean():8.3f}  full-test table "
               f"{float(o[0]):8.3f}")
@@ -174,14 +200,19 @@ for s in SIGS:
 BLUE, ORANGE, AQUA, YELLOW, MAGENTA = '#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4'
 INK, INK2, MUTED, GRID, AXIS, SURF = '#0b0b0b', '#52514e', '#898781', '#e1e0d9', '#c3c2b7', '#fcfcfb'
 SERIES = [  # key, label, color, marker, filled, linestyle
-    ('linear',          'Linear (Wiener)',                           MAGENTA, 'v', True, '-'),
+    ('linear',          'Linear (Wiener)' + (' — 10k pool cov (rank 9999)' if RES == 64 else ''),
+                                                                     MAGENTA, 'v', True, '-'),
+    ('linearB',         'Linear (Wiener) — larger full-rank cov',    MAGENTA, 'v', False, (0, (4, 2))),
     ('global_insample', 'Softmax, global — train = eval',            YELLOW,  'D', False, (0, (1.5, 1.5))),
     ('global_heldout',  'Softmax, global — held out',                YELLOW,  'D', True, '-'),
     ('luk',             'Softmax, local — Lukoianov (Wiener mask)',  AQUA,    '^', True, '-'),
+    ('lukB',            'Lukoianov — mask from larger covariance',   AQUA,    '^', False, (0, (4, 2))),
     ('ls',              'Softmax, local — Kamb & Ganguli LS',        ORANGE,  'o', True, '-'),
-] + [(k, v[1], BLUE, v[3], v[4], v[5]) for k, v in NETS.items()]   # one hue: all networks
-SHORT = {'linear': 'linear', 'global_insample': 'global (train=eval)',
-         'global_heldout': 'global held out', 'luk': 'Lukoianov', 'ls': 'LS',
+] + [(k, v[1], BLUE, v[3], v[4], v[5]) for k, v in NETS.items()    # one hue: all networks
+       if PLOT_NETS is None or k in PLOT_NETS or k == 'edm']
+DRAWN = {k for k, *_ in SERIES}
+SHORT = {'linear': 'linear', 'linearB': 'linear (B)', 'global_insample': 'global (train=eval)',
+         'global_heldout': 'global held out', 'luk': 'Lukoianov', 'ls': 'LS', 'lukB': 'Lukoianov (B)',
          **{k: v[2] for k, v in NETS.items()}}
 
 plt.rcParams.update({'font.size': 9, 'axes.edgecolor': AXIS, 'axes.labelcolor': INK2,
@@ -253,9 +284,13 @@ else:
     axes[1].yaxis.set_minor_locator(matplotlib.ticker.NullLocator())
 axes[0].set_ylabel('MSE  E‖x₀ − D(y)‖²  per image (sum over 3072 coords)')
 axes[0].set_title(f'MSE vs noise, {DSNAME}', loc='left')
-axes[1].set_ylabel('MSE / Wiener MSE on the same images and noise')
+axes[1].set_ylabel('MSE / Wiener MSE on the same images and noise'
+                   + ('\n(reference: full-rank Wiener B)' if REF == 'wienerB' else ''))
 axes[1].set_title('Relative to linear  (< 1 beats Wiener)', loc='left')
-fig.legend(loc='lower center', ncol=4, frameon=False, fontsize=8, bbox_to_anchor=(0.5, 0.045))
+NLEG = len([1 for k, *_ in SERIES if any(r[0] == k for r in rows)])   # drawn series only
+LEGH = 0.025 * ((NLEG + 3) // 4)              # legend height grows with its row count
+fig.legend(loc='lower center', ncol=4, frameon=False, fontsize=8,
+           bbox_to_anchor=(0.5, 0.05))
 n_a = int(np.asarray(A.get('meta_NTEST', 0)))
 if YLIN:
     axes[1].text(6e-6, R_HI * 1.025, f'▲ > {R_HI:g}×', color=MUTED, fontsize=7.5)
@@ -268,9 +303,10 @@ if DS == 'cifar10':
             f'range.  train = eval: pool contains the evaluated image.')
 else:
     ts = int(np.asarray(A.get('meta_TEST_START', 0)))
+    nv = int(np.asarray(A.get('meta_NVAL', 0)))
     head = (f'Held out: pool/fit = images [0:10000], test = [{ts}:{ts + n_a}], k and τ picked '
-            f'on the last 200 images.  U-nets: same SongUNet; hollow = σ < {EDM_SMIN:g} '
-            f'(below training range).  train = eval: pool images [0:{n_a}], pool contains each.')
+            f'on the last {nv} images.  Networks: hollow = σ < {EDM_SMIN:g} (below training '
+            f'range).  train = eval: pool images [0:{n_a}], pool contains each.')
 fig.text(0.01, 0.955, head, fontsize=7.5, color=INK2)
 sel = []
 for key, name, pre in (('ls', 'LS', 'k'), ('luk', 'Lukoianov', 'τ')):
@@ -282,7 +318,7 @@ fig.text(0.01, 0.005, 'val-selected, by σ ascending:   ' + ';   '.join(sel),
 fig.text(0.01, 0.028, 'Lukoianov at σ ≤ 0.001 → 0 is an 8-bit artefact: as σ → 0 its Wiener mask '
          'shrinks to the diagonal, a per-coordinate nearest value among 10k training pixels, '
          'which snaps to the exact 1/255 level once σ ≪ 1/255.', fontsize=7.5, color=INK2)
-fig.tight_layout(rect=(0, 0.14, 1, 0.95))
+fig.tight_layout(rect=(0, 0.06 + LEGH + 0.03, 1, 0.95))
 
 
 def spread(ax, items, gap=11):
@@ -309,7 +345,8 @@ fig.savefig(OUT + '.pdf', facecolor=SURF)
 
 with open(OUT + '.csv', 'w') as f:
     f.write('curve,sigma,mse,se,ratio_to_wiener,ratio_se,selected_param,n_images\n')
-    for r in sorted(rows, key=lambda r: ([k for k, *_ in SERIES].index(r[0]), r[1])):
+    order = [k for k, *_ in SERIES] + [k for k in NETS if k not in DRAWN]
+    for r in sorted(rows, key=lambda r: (order.index(r[0]), r[1])):
         f.write(','.join(str(x) for x in r) + '\n')
 print(f"wrote {OUT}.png/.pdf/.csv  ({len(rows)} cells)")
 for key, *_ in SERIES:

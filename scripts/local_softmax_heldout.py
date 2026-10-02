@@ -59,7 +59,9 @@ from core.local_softmax import (ls_window_mask, wiener_locality_mask, masked_sof
 DEV = 'cuda' if torch.cuda.is_available() else 'cpu'
 DT = torch.float64
 torch.backends.cuda.matmul.allow_tf32 = False
-C, H, W = 3, 32, 32
+# resolution follows DATASET (read here because the shapes are module constants)
+_RES = 64 if os.environ.get('DATASET', 'cifar10').endswith('64') else 32
+C, H, W = 3, _RES, _RES
 d = C * H * W
 ROOT = '/n/home12/binxuwang/.keras/datasets'
 STORE = os.environ.get('STORE_DIR',
@@ -69,7 +71,9 @@ CKPT_DIR = os.path.join(STORE, 'Datasets/EDM_datasets/edm_ckpts')
 SIGS = [float(x) for x in
         os.environ.get('SIGS', '0.127,0.452,0.621,0.853,1.172,1.610,2.212,5.0').split(',')]
 ARMS = os.environ.get('ARMS', 'wiener,ls,luk,els,edm').split(',')
-KS_LS = [int(x) for x in os.environ.get('KS_LS', '3,5,7,9,11,13,15,19,23,31,63').split(',')]
+KS_LS = [int(x) for x in os.environ.get(
+    'KS_LS', '3,5,7,9,11,13,15,19,23,31,63' if H == 32 else
+    '1,3,5,7,9,11,15,19,23,31,39,47,63,127').split(',')]   # 2H-1 = whole image = global
 KS_ELS = [int(x) for x in os.environ.get('KS_ELS', '3,5,7,9,11,13,15,19,23,27,31').split(',')]
 TAUS = [float(x) for x in os.environ.get('TAUS', '0.005,0.01,0.02,0.05,0.1,0.2').split(',')]
 TAU_MODE = os.environ.get('TAU_MODE', 'global')
@@ -99,8 +103,19 @@ DATASET = os.environ.get('DATASET', 'cifar10')
 DLC = os.path.join(STORE, 'DL_Projects/DiffusionSpectralLearningCurve')
 UNETS = os.environ.get('UNETS', '10000_split1').split(',')
 TEST_START = int(os.environ.get('TEST_START', str(NIMG)))
-assert DATASET in ('cifar10', 'ffhq32', 'afhq32'), DATASET
-assert not (COND and DATASET != 'cifar10'), 'no labels for ffhq32 / afhq32'
+# 64 px (2026-10-01): ffhq64 / afhq64 = EDM's ffhq-64x64 / afhqv2-64x64 zips, decoded once by
+# scripts/prep_64px.py (sorted-name order = the learning-curve U-nets' dset indices).  UNETS
+# ids there also take '{ntrain}_longtrain_{split}' (250k-step twins) and 'edm' (the official
+# EDM pickle, trained on the whole dataset -> test images SEEN).
+# LUKB_COV='a:b[,c:d...]' adds variant B, a covariance from MORE images than the 10k pool
+# (union of the ranges; must exclude test and val): the 'lukB' arm (Lukoianov masks from it,
+# softmax pool unchanged, tau grid TAUS_B) and the 'wienerB' arm (Wiener from it).  wienerB
+# exists because at 64 px the pool covariance has rank 9999 < d = 12288: the pool Wiener
+# zeroes ~2300 directions and floors at ~0.38 per image at sigma=0.0002 (identity: 5e-4).
+assert DATASET in ('cifar10', 'ffhq32', 'afhq32', 'ffhq64', 'afhq64'), DATASET
+assert not (COND and DATASET != 'cifar10'), 'no labels outside cifar10'
+LUKB_COV = os.environ.get('LUKB_COV', '')
+TAUS_B = [float(x) for x in os.environ.get('TAUS_B', '0.05,0.1,0.2').split(',')]
 OUT = os.environ.get('OUT', f"tables/local_softmax_heldout{'_cond' if COND else ''}.npz"
                      if DATASET == 'cifar10' else f"tables/local_softmax_heldout_{DATASET}.npz")
 
@@ -123,11 +138,16 @@ def load_data():
         Xt, lt = load_xy(False, NTEST)
         return (Xp[:NIMG], lp[:NIMG], Xp[NIMG:], lp[NIMG:], Xt, lt,
                 f"pool=train[:{NIMG}]  test=test[:{NTEST}]  val=train[{NIMG}:{NIMG+NVAL}]")
-    X = torch.load(os.path.join(DLC, 'wordnet_render_dataset',
-                                f"{DATASET[:4]}-32x32.pt"), mmap=True)
+    if H == 64:
+        from scripts.prep_64px import load as load64
+        X = load64(DATASET)                                         # uint8
+        f = lambda a, b: X[a:b].to(DEV, DT) / 255.0
+    else:
+        X = torch.load(os.path.join(DLC, 'wordnet_render_dataset',
+                                    f"{DATASET[:4]}-32x32.pt"), mmap=True)
+        f = lambda a, b: X[a:b].to(DEV, DT)
     n = X.shape[0]
     assert NIMG <= TEST_START and TEST_START + NTEST <= n - NVAL, (n, TEST_START, NTEST, NVAL)
-    f = lambda a, b: X[a:b].to(DEV, DT)
     z = lambda m: torch.zeros(m, dtype=torch.long, device=DEV)
     return (f(0, NIMG), z(NIMG), f(n - NVAL, n), z(NVAL),
             f(TEST_START, TEST_START + NTEST), z(NTEST),
@@ -146,9 +166,13 @@ def load_net(unet_id=None):
     DiffusionLearningCurve SongUNet '{ntrain}_{split}' | 'full' | 'full_longtrain'.  (CIFAR's
     learning-curve runs index EDM's cifar10-32x32.zip, whose order was checked identical to
     torchvision's train split, so CIFAR 10000_split1 is trained on exactly this pool.)"""
-    if unet_id is None:
+    if unet_id in (None, 'edm'):
         sys.path.insert(0, '/n/home12/binxuwang/Github/edm')
-        with open(os.path.join(CKPT_DIR, f'edm-cifar10-32x32-{EDM_NET}.pkl'), 'rb') as f:
+        pk = {'cifar10': f'edm-cifar10-32x32-{EDM_NET}.pkl',
+              'ffhq64': 'edm-ffhq-64x64-uncond-vp.pkl',
+              'afhq64': 'edm-afhqv2-64x64-uncond-vp.pkl'}[DATASET]
+        print(f"  EDM: {pk}", flush=True)
+        with open(os.path.join(CKPT_DIR, pk), 'rb') as f:
             net = pickle.load(f)['ema'].to(DEV).eval()
         return lambda y, s, lab: net(y, s, class_labels=lab), bool(net.label_dim)
     # The learning-curve repo also has a top-level package named `core`, so its network file
@@ -161,15 +185,16 @@ def load_net(unet_id=None):
     lib = importlib.util.module_from_spec(spec); spec.loader.exec_module(lib)
     # 'full' / 'full_longtrain' = the same architecture trained on the WHOLE dataset (50k /
     # 250k steps) -- the test images are then IN its training set (no held-out images exist).
-    pre = {'cifar10': 'CIFAR', 'ffhq32': 'FFHQ32', 'afhq32': 'AFHQ32'}[DATASET]
+    pre = {'cifar10': 'CIFAR', 'ffhq32': 'FFHQ32', 'afhq32': 'AFHQ32', 'ffhq64': 'FFHQ64',
+           'afhq64': 'AFHQ64'}[DATASET]
     alias = {'full': f"{pre}_UNet_CNN_EDM_4blocks_wide128_attn_saveckpt_fewsample",
              'full_longtrain': f"{pre}_UNet_CNN_EDM_4blocks_wide128_attn_"
                                f"saveckpt_fewsample_longtrain"}
     if unet_id in alias:
         run = os.path.join(DLC, alias[unet_id])
     else:
-        ntr, split = unet_id.split('_')
-        run = os.path.join(DLC, f"{pre}_{ntr}_UNet_CNN_EDM_DSM_{split}")
+        ntr, rest = unet_id.split('_', 1)                # '10000_split1', '30000_longtrain_split1'
+        run = os.path.join(DLC, f"{pre}_{ntr}_UNet_CNN_EDM_DSM_{rest}")
     cfg = json.load(open(os.path.join(run, 'config.json')))
     unet = lib.SongUNet(in_channels=cfg['channels'], out_channels=cfg['channels'],
                         num_blocks=cfg['layers_per_block'],
@@ -181,7 +206,14 @@ def load_net(unet_id=None):
                         embedding_type='positional', encoder_type='standard',
                         decoder_type='standard', augment_dim=cfg['augment_dim'],
                         channel_mult_noise=1, resample_filter=[1, 1])
-    unet.load_state_dict(torch.load(os.path.join(run, 'model_final.pth'), map_location=DEV))
+    wf = os.path.join(run, 'model_final.pth')
+    if not os.path.exists(wf):            # 64-px full-data longtrain runs stopped at ~221k steps
+        wf = os.path.join(run, 'ckpts', sorted(os.listdir(os.path.join(run, 'ckpts')))[-1])
+    sd_ = torch.load(wf, map_location=DEV)
+    # mid-training ckpts were saved from the EDMCNNPrecondWrapper: keys carry a 'model.' prefix
+    sd_ = {(k[6:] if k.startswith('model.') else k): v for k, v in sd_.items()}
+    unet.load_state_dict(sd_)
+    run = f"{run}  [{os.path.basename(wf)}]"
     unet = unet.to(DEV).eval()
     sd = 0.5
 
@@ -193,6 +225,33 @@ def load_net(unet_id=None):
         return c_skip * y + c_out * unet(c_in * y, (s.log() / 4).view(-1), cond=None)
     print(f"  U-net: {run}", flush=True)
     return D, False
+
+
+def variant_b_cov():
+    """(mu, eigvals, eigvecs) of the variant-B covariance (LUKB_COV ranges), or Nones."""
+    if not LUKB_COV:
+        return None, None, None
+    from scripts.prep_64px import load as load64
+    Xall = load64(DATASET)
+    nall = Xall.shape[0]
+    idx = []
+    for rg in LUKB_COV.split(','):
+        a, b = (int(v) for v in rg.split(':'))
+        assert b <= TEST_START or a >= TEST_START + NTEST, 'LUKB_COV must exclude test'
+        assert b <= nall - NVAL, 'LUKB_COV must exclude val'
+        idx.append(torch.arange(a, b))
+    XB = Xall[torch.cat(idx)]; del Xall
+    muB = torch.zeros(d, device=DEV, dtype=DT); SB = torch.zeros(d, d, device=DEV, dtype=DT)
+    for i in range(0, XB.shape[0], 5000):   # raw first/second moments in float64; values
+        xb = (XB[i:i + 5000].to(DEV, DT) / 127.5 - 1).reshape(-1, d)   # lie in [-1,1], so
+        muB += xb.sum(0); SB += xb.T @ xb                   # E[xx^T] - mu mu^T is stable
+    muB /= XB.shape[0]
+    SB = SB / XB.shape[0] - torch.outer(muB, muB)
+    evB, UB = torch.linalg.eigh(SB); evB = evB.clamp_min(0.0)
+    print(f"  variant-B covariance: images {LUKB_COV} (n={XB.shape[0]}), "
+          f"rank ~{int((evB > evB.max() * 1e-10).sum())}", flush=True)
+    del SB, XB
+    return muB, evB, UB
 
 
 def pca(X):
@@ -234,6 +293,7 @@ def main():
     E = lambda X: (2.0 * X - 1.0).reshape(X.shape[0], d)        # EDM units, flattened
     Pp, Pv, Pt = E(Xp), E(Xv), E(Xt)
     mu, ev, U = pca(Pp)
+    muB, evB, UB = variant_b_cov()
     Q = torch.cat([Pt, Pv])                                     # every arm denoises test+val
     lq = torch.cat([lt, lv])
     nt = Pt.shape[0]
@@ -314,6 +374,8 @@ def main():
             t0 = time.time()
             if not have(f'wiener|{sg}'):
                 put(f'wiener|{sg}', wiener_denoise(Y, mu, ev, U, se), t0)
+            if evB is not None and not have(f'wienerB|{sg}'):
+                put(f'wienerB|{sg}', wiener_denoise(Y, muB, evB, UB, se), t0)
             if COND and not have(f'wienerC|{sg}'):
                 def wc(Yc, Xc):
                     m, e, u = pca(Xc)
@@ -344,6 +406,16 @@ def main():
                 put(key, r['x'], t0, r['n'])
                 print(f"      mask support/row: median {float(M.sum(1).median()):.0f} "
                       f"of {d}", flush=True)
+            for tau in (TAUS_B if evB is not None else []):
+                key = f'lukB|{sg}|{tau:g}|{TAU_MODE}'
+                if have(key):
+                    continue
+                t0 = time.time()
+                M = wiener_locality_mask(evB, UB, se, tau, TAU_MODE)
+                r = by_class(lambda Yc, Xc: dict(zip(('x', 'n'), masked_softmax_denoise(
+                    Yc, Xc, se, M, pixel_mask=False, C=C, pool_chunk=512,
+                    return_neff=True))), Y, lq, Pp, lp)
+                put(key, r['x'], t0, r['n'])
 
         if 'els' in ARMS:
             todo = [k for k in KS_ELS if not have(f'els|{sg}|{k}')]

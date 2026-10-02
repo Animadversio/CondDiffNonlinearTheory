@@ -47,10 +47,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np, torch
 
 DATASET = os.environ.setdefault('DATASET', 'cifar10')
-os.environ.setdefault('TEST_START', {'cifar10': '10000', 'ffhq32': '60000',
-                                     'afhq32': '10000'}[DATASET])
-os.environ.setdefault('NTEST', '1000')
-os.environ.setdefault('NVAL', '200')
+os.environ.setdefault('TEST_START', {'cifar10': '10000', 'ffhq32': '60000', 'afhq32': '10000',
+                                     'ffhq64': '60000', 'afhq64': '10000'}[DATASET])
+# 64 px (2026-10-01): the held-out tables use 500 test / 100 val, and add the full-rank
+# variant-B covariance (the 10k pool covariance has rank 9999 < d = 12288) -> 'wienerB'.
+_64 = DATASET.endswith('64')
+os.environ.setdefault('NTEST', '500' if _64 else '1000')
+os.environ.setdefault('NVAL', '100' if _64 else '200')
+if _64:
+    os.environ.setdefault('LUKB_COV', {'ffhq64': '0:60000',
+                                       'afhq64': '0:10000,10500:15703'}[DATASET])
 import scripts.local_softmax_heldout as L
 from core.local_softmax import (ls_window_mask, wiener_locality_mask, masked_softmax_denoise,
                                 wiener_denoise)
@@ -62,8 +68,11 @@ SEED = int(os.environ.get('SEED', '0'))
 SMIN, SMAX, RHO = 0.002, 80.0, 7.0
 UNETS = os.environ.get('SAMPLE_UNETS', {'cifar10': 'edm,10000_split1',
                                         'ffhq32': '10000_split1,full_longtrain',
-                                        'afhq32': '10000_split1,full'}[DATASET]).split(',')
-ANALYTIC = os.environ.get('METHODS', 'wiener,ls,luk,global').split(',')
+                                        'afhq32': '10000_split1,full',
+                                        'ffhq64': 'edm,30000_split1,10000_split1',
+                                        'afhq64': 'edm,full_longtrain'}[DATASET]).split(',')
+ANALYTIC = os.environ.get('METHODS', 'wiener,ls,luk,global' + (',wienerB' if _64 else '')
+                          ).split(',')
 CACHE = os.path.join(L.STORE, 'CondDiffNonlinearTheory', 'local_softmax_samples', DATASET,
                      f'N{NSAMP}_steps{STEPS}_seed{SEED}')      # every cached file is keyed on these
 TABLE = ('tables/local_softmax_heldout.npz' if DATASET == 'cifar10'
@@ -87,7 +96,7 @@ def schedule(arm):
         if not (k.startswith(f'val:{arm}|')):
             continue
         _, s, p = k.split('|', 2)
-        if arm == 'ls' and p == '63':          # whole-image window = the global arm
+        if arm == 'ls' and p == str(2 * H - 1):    # whole-image window = the global arm
             continue
         s = float(s)
         if s not in out or A[k].mean() < out[s][1]:
@@ -105,12 +114,15 @@ def build():
     Xp, *_ = L.load_data()
     Pp = (2.0 * Xp - 1.0).reshape(-1, d)
     mu, ev, U = L.pca(Pp)
+    muB, evB, UB = L.variant_b_cov()
     Mg = ls_window_mask(H, W, 2 * H - 1, DEV, DT)
     ls_s, luk_s = schedule('ls'), schedule('luk')
     masks = {}
     flat = lambda f: (lambda x, s: f(x.reshape(x.shape[0], d), s).reshape(x.shape))
     D = {
         'wiener': flat(lambda y, s: wiener_denoise(y, mu, ev, U, s)),
+        **({'wienerB': flat(lambda y, s: wiener_denoise(y, muB, evB, UB, s))}
+           if evB is not None else {}),
         'global': flat(lambda y, s: masked_softmax_denoise(y, Pp, s, Mg, True, C=C)),
     }
 

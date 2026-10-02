@@ -19,7 +19,8 @@ import matplotlib.pyplot as plt
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DS = sys.argv[sys.argv.index('--dataset') + 1] if '--dataset' in sys.argv else 'cifar10'
-DSNAME = {'cifar10': 'CIFAR-10', 'ffhq32': 'FFHQ 32×32', 'afhq32': 'AFHQ 32×32'}[DS]
+DSNAME = {'cifar10': 'CIFAR-10', 'ffhq32': 'FFHQ 32×32', 'afhq32': 'AFHQ 32×32',
+          'ffhq64': 'FFHQ 64×64', 'afhq64': 'AFHQ 64×64'}[DS]
 STORE = os.environ.get('STORE_DIR', '/n/holylfs06/LABS/kempner_fellow_binxuwang/Users/binxuwang')
 Z = dict(np.load(os.path.join(ROOT, 'tables', f'local_softmax_samples_{DS}.npz'), allow_pickle=True))
 N, STEPS = int(Z['meta_NSAMP']), int(Z['meta_STEPS'])
@@ -32,21 +33,23 @@ sig_pix = Z['ts'] / 2                                  # EDM sigma -> [0,1]-pixe
 
 BLUE, ORANGE, AQUA, YELLOW, MAGENTA = '#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4'
 INK, INK2, MUTED, GRID, AXIS, SURF = '#0b0b0b', '#52514e', '#898781', '#e1e0d9', '#c3c2b7', '#fcfcfb'
-UNAME = {'unet-edm': 'EDM U-net (50k)', 'unet-10000_split1': 'U-net 10k (= pool)',
-         'unet-full_longtrain': 'U-net 70k long', 'unet-full': 'U-net full',
+UNAME = {'unet-edm': 'EDM U-net (50k)' if DS == 'cifar10' else 'EDM U-net (official, all data)', 'unet-10000_split1': 'U-net 10k (= pool)',
+         'unet-full_longtrain': ('U-net all 15.8k, long' if DS.startswith('afhq') else 'U-net 70k long'), 'unet-full': 'U-net full',
          'unet-30000_split1': 'U-net 30k'}
 STYLE = {  # name, color, marker, linestyle
     'wiener': ('Linear (Wiener)', MAGENTA, 'v', '-'),
+    'wienerB': ('Linear (Wiener, full-rank cov)', MAGENTA, 'v', (0, (4, 2))),
     'ls': ('LS (Kamb & Ganguli)', ORANGE, 'o', '-'),
     'luk': ('Lukoianov', AQUA, '^', '-'),
     'global': ('Global softmax', YELLOW, 'D', '-'),
 }
 for i, u in enumerate(UNETS):
-    STYLE[u] = (UNAME.get(u, u), BLUE, 's', ['-', (0, (4, 2))][i % 2])
-ORDER = UNETS + ['wiener', 'ls', 'luk', 'global']
+    STYLE[u] = (UNAME.get(u, u), BLUE, 's', ['-', (0, (4, 2)), (0, (1.5, 1.5))][i % 3])
+ORDER = UNETS + ['wiener', 'wienerB', 'ls', 'luk', 'global']
 ORDER = [m for m in ORDER if m in METHODS]
 # the "best" U-net is the reference in panel (a), the pool-matched one in (b)
-REFS = sorted(UNETS, key=lambda u: '10000' in u)
+REFS = sorted(UNETS, key=lambda u: 1 if '10000' in u else (2 if '30000' in u else 0))
+MK = ['s', 'o', '^']                   # final-R^2 marker per reference (filled, hollow, hollow)
 plt.rcParams.update({'font.size': 9, 'axes.edgecolor': AXIS, 'axes.labelcolor': INK2,
                      'xtick.color': INK2, 'ytick.color': INK2, 'text.color': INK,
                      'axes.titlesize': 10, 'axes.titleweight': 'bold'})
@@ -109,18 +112,14 @@ for j, u in enumerate(REFS):
             continue
         v = Z[f'finr2:{m}|{u}']
         off = (j - (len(REFS) - 1) / 2) * 0.22
-        ax.errorbar(i + off, v.mean(), yerr=se(v), fmt='s' if j == 0 else 'o',
-                    color=STYLE[m][1], mfc=STYLE[m][1] if j == 0 else SURF, ms=6, capsize=2,
-                    label=f'vs {UNAME.get(u, u)}' if i == (1 if m == ORDER[0] else 0) or
-                    (i == 0 and m != u) else None)
+        ax.errorbar(i + off, v.mean(), yerr=se(v), fmt=MK[j % 3], color=STYLE[m][1],
+                    mfc=STYLE[m][1] if j == 0 else SURF, ms=6, capsize=2)
 ax.set_xticks(xpos); ax.set_xticklabels([STYLE[m][0] for m in ORDER], rotation=25, ha='right')
 ax.axhline(0, color=INK2, lw=0.8)
 ax.set_ylabel('final-sample R² vs the U-net sample (same seed)')
 ax.set_title('Final samples: agreement with each U-net', loc='left')
-h = [plt.Line2D([], [], color=INK2, marker='s', ls='', ms=6, label=f'vs {UNAME.get(REFS[0], REFS[0])}  (filled)')]
-if len(REFS) > 1:
-    h.append(plt.Line2D([], [], color=INK2, marker='o', mfc=SURF, ls='', ms=6,
-                        label=f'vs {UNAME.get(REFS[1], REFS[1])}  (hollow)'))
+h = [plt.Line2D([], [], color=INK2, marker=MK[j % 3], mfc=INK2 if j == 0 else SURF, ls='',
+                ms=6, label=f'vs {UNAME.get(u, u)}') for j, u in enumerate(REFS)]
 ax.legend(handles=h, frameon=False, fontsize=7.5, loc='lower left')
 
 ax = axes[1][1]; style_ax(ax)

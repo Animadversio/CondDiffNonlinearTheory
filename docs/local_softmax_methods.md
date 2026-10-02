@@ -182,3 +182,91 @@ that is likely partly recall, so it is not a generalisation number.
   either local softmax does. On AFHQ it is 1.00–1.01× there, and on CIFAR 1.01–1.02×.
 - **The long-trained U-net converges to Wiener at both ends,** as EDM does on CIFAR:
   1.00× at σ = 0.0002 and 0.99–1.01× for σ ≥ 5.
+
+## 6. 64 × 64: FFHQ64 and AFHQ64 (2026-10-01)
+
+**How to reproduce:**
+- Data: `scripts/prep_64px.py` caches EDM's `ffhq-64x64` / `afhqv2-64x64` zips as uint8 in
+  `STORE_DIR/CondDiffNonlinearTheory/data/`.
+- Held out: `scripts/run_local_softmax_64.sh {ffhq64,afhq64}` →
+  `tables/local_softmax_heldout_{ffhq64,afhq64}.npz`, plotted with
+  `local_softmax_heldout_plot.py --dataset ffhq64 [--ylinear] [--nets a,b]`.
+- Sampling: `scripts/run_local_softmax_sampling_64.sh` → `tables/local_softmax_samples_*64.npz`.
+
+**Setup.** Same contract as 32 px:
+- Pool [0:10000]; 500 test and 100 validation images; 19 σ.
+- Test images: FFHQ64 [60000:60500], AFHQ64 [10000:10500].
+- Lukoianov's τ grid is the full 9 values for σ ≤ 0.01, and {0.02, 0.05, 0.1, 0.2, 0.3}
+  above (see the run script).
+
+**The covariance problem and the B variant.**
+- At d = 12288 the 10k-pool covariance has rank 9999. The pool Wiener therefore zeroes about
+  2300 directions and floors at 0.38 per image at σ = 0.0002, where the identity map scores
+  5·10⁻⁴.
+- `LUKB_COV` adds variant B, a full-rank covariance from more images, used for both:
+  - the `wienerB` arm (a Wiener filter), which is the ratio reference at 64 px;
+  - the `lukB` arm (Lukoianov masks).
+- B's images: FFHQ [0:60000]; AFHQ [0:10000] + [10500:15703].
+- Lukoianov A and B agree within about 0.01 (FFHQ64) and 0.01–0.12 (AFHQ64, largest at
+  σ = 0.01) at every σ. The receptive-field estimate is not what limits the method.
+
+**U-nets** (DiffusionSpectralLearningCurve SongUNets plus the official EDM 64-px pickles):
+
+| U-net | trained on | test images |
+|---|---|---|
+| FFHQ64 10k | [0:10k] = the pool, 50k or 250k steps | unseen |
+| FFHQ64 30k | [0:30k], 50k or 250k steps | unseen |
+| FFHQ64 full long | all 70k, last ckpt ~221k steps | SEEN |
+| EDM ffhq-64 | all 70k | SEEN |
+| AFHQ64 full long | all images, ckpt ~221k steps | SEEN |
+| EDM afhqv2-64 | all images | SEEN |
+
+**Held-out results** (ratio to Wiener B):
+
+| σ | FFHQ Luk A | FFHQ LS | FFHQ U-net 30k | FFHQ U-net 10k | FFHQ EDM | AFHQ Luk A | AFHQ EDM |
+|---|---|---|---|---|---|---|---|
+| 0.01 | 1.61 | 2.14 | 0.53 | 0.59 | 0.49 | 1.20 | 0.44 |
+| 0.127 | 1.07 | 1.13 | 0.52 | 1.42 | 0.44 | 1.04 | 0.47 |
+| 0.452 | 1.00 | 1.06 | 0.67 | 1.19 | 0.56 | 1.00 | 0.52 |
+| 1.61 | 1.01 | 1.06 | 0.84 | 0.93 | 0.78 | 1.02 | 0.72 |
+| 10 | 1.00 | 1.02 | 1.01 | 1.01 | 0.99 | 1.00 | 1.00 |
+
+**Held-out findings:**
+- **Training longer worsens held-out error.** At σ = 0.127 the FFHQ64 U-nets score:
+
+  | U-net | ratio |
+  |---|---|
+  | 10k, 50k steps | 1.42 |
+  | 10k, 250k steps | 2.40 |
+  | 30k, 250k steps | 0.81 |
+  | 30k, 50k steps | 0.52 |
+
+- **AFHQ64's U-nets saw the test images.** Their 0.27–0.47 is on seen images. They are also
+  0.41–0.86× Wiener at σ ≤ 0.002, where FFHQ64's U-nets are about 1.0×, i.e. they partly
+  recall those images.
+
+**Heun-30 sampling, 256 shared seeds.** Final-sample R² against each U-net's sample from the
+same seed:
+
+| method | FFHQ64 vs EDM | FFHQ64 vs U-net 30k | FFHQ64 vs U-net 10k | AFHQ64 vs EDM | AFHQ64 vs full |
+|---|---|---|---|---|---|
+| Lukoianov | 0.755 | 0.606 | 0.754 | 0.643 | 0.490 |
+| Wiener B | 0.740 | 0.586 | 0.768 | 0.651 | 0.492 |
+| LS | 0.628 | 0.484 | 0.673 | 0.525 | 0.349 |
+| global softmax | −0.04 | −0.13 | −0.10 | −0.31 | −0.50 |
+
+**Sampling findings:**
+- **None of the analytic samplers produce realistic images.** Wiener, Lukoianov and LS give
+  face- or animal-shaped textures whose layout follows the U-net from the same seed.
+- **Lukoianov adds little beyond linear here.** Its agreement with the U-nets is close to
+  Wiener B's, sometimes slightly above and sometimes below.
+- **The global softmax copies 100 % of the time.**
+- **U-nets trained on the pool, or on all images, drift toward their training set.** Their
+  median squared distance to the nearest pool image is lower than for held-out test images:
+
+  | U-net | median d₁² | test images |
+  |---|---|---|
+  | FFHQ64 10k U-net | 399 | 506 |
+  | AFHQ64 full U-net | 369 | 509 |
+
+  None of them pass the copy test (d₁/d₂ < 1/3).
