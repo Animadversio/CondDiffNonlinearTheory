@@ -1,5 +1,5 @@
 """
-rf_kstar_vs_sigma.py — k_*(sigma) for MNIST / CIFAR-10, plotted against the gap an RF
+rf_kstar_vs_sigma.py — tolerance widths k_tau(sigma) for MNIST / CIFAR-10, plotted against the gap an RF
 denoiser could actually close. Four panels: top row = the gaps, bottom row = the thresholds.
 
 Supersedes scripts/rf_kstar_for_dnn_experiment.py, in three ways.
@@ -14,13 +14,13 @@ Supersedes scripts/rf_kstar_for_dnn_experiment.py, in three ways.
    singular (71 always-black border pixels), so there the old form was not merely
    ill-conditioned but undefined.
 
-2. THE QUANTITY PLOTTED IS THE OPERATIONAL THRESHOLD, not d/hat_eps^2. The writeup's
-   k_* = d/hat_eps_d^2 drops the eps_hat -> eps_check conversion Xi = ~1/gamma, which is
+2. THE QUANTITY PLOTTED IS THE OPERATIONAL THRESHOLD, not the asymptotic k_*. Its
+   defect branch d/hat_eps_d^2 drops the eps_hat -> eps_check conversion Xi = ~1/gamma, which is
    d-independent (so all d-scaling results stand) but is ~1e4 at small sigma for ReLU, since
    the Mehler band energy scales like gamma ~ s^{2 n_0}, s = sigma ||theta||. We therefore
    plot the constant-complete
        k(gap <= tau) = tau * d / (4 * check_eps_w^2)     [rho_* = delta = 1/2]
-   and show d/hat_eps_w^2 only as a dashed reference.
+   The defect-only fourth-moment scale is not used in the operational threshold.
 
 3. THE LOW-SIGMA GAP IS MARKED AS AN ARTIFACT. An "oracle Bayes" curve computed from a
    finite sample is the Bayes denoiser for the ATOMIC empirical measure. Once
@@ -33,6 +33,11 @@ Supersedes scripts/rf_kstar_for_dnn_experiment.py, in three ways.
 
     python scripts/rf_kstar_vs_sigma.py              # compute (GPU, a few min) + plot
     REPLOT=1 python scripts/rf_kstar_vs_sigma.py     # redraw from the npz only (~1 s, no GPU)
+    NO_NEFF=1 REPLOT=1 python scripts/rf_kstar_vs_sigma.py
+        # paper variant: shade the full Wiener--Bayes gap without N_eff annotations or a
+        # separate gap legend entry. Writes figures/rf_kstar_vs_sigma_noneff.png + .pdf.
+    NO_NEFF=1 ONE_COLUMN=1 REPLOT=1 python scripts/rf_kstar_vs_sigma.py
+        # narrow four-panel layout for a single paper column.
 """
 
 import sys, os
@@ -40,13 +45,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from math import factorial
 import numpy as np
-import torch
+try:
+    import torch
+except ImportError:            # REPLOT=1 needs only numpy + matplotlib
+    torch = None
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-DEV = 'cuda' if torch.cuda.is_available() else 'cpu'
-DT = torch.float64
+DEV = 'cuda' if torch is not None and torch.cuda.is_available() else 'cpu'
+DT = torch.float64 if torch is not None else None
 N_THETA = int(os.environ.get('N_THETA', '2048'))
 NIMG    = int(os.environ.get('NIMG', '50000'))
 N0, NB  = 2, 6
@@ -58,7 +66,13 @@ TBL = {'CIFAR-10': 'tables/dnn_feature_mmse_cifar10_N10000_noise5_sigma30.npz',
 SIG_LO, SIG_HI = 0.02, 10.0          # window where the figure's gap lives
 NEFF_MIN = 2.0                       # posterior must spread over >=2 atoms to count as genuine
 N_SIG = int(os.environ.get('N_SIG', '12'))
-OUT_FIG = 'figures/rf_kstar_vs_sigma.png'
+NO_NEFF = bool(os.environ.get('NO_NEFF'))
+ONE_COLUMN = bool(os.environ.get('ONE_COLUMN'))
+if ONE_COLUMN and not NO_NEFF:
+    raise ValueError('ONE_COLUMN requires NO_NEFF=1')
+OUT_FIG = ('figures/rf_kstar_vs_sigma_noneff_onecol.png' if ONE_COLUMN else
+           'figures/rf_kstar_vs_sigma_noneff.png' if NO_NEFF else
+           'figures/rf_kstar_vs_sigma.png')
 OUT_TBL = 'tables/rf_kstar_vs_sigma.npz'
 
 
@@ -210,7 +224,53 @@ def compute(sigmas):
     return R
 
 
+def make_figure_onecol(R, sigmas):
+    with plt.rc_context({'font.size': 8, 'axes.labelsize': 8, 'axes.titlesize': 8.5,
+                         'xtick.labelsize': 7, 'ytick.labelsize': 7}):
+        fig, axes = plt.subplots(4, 1, figsize=(3.25, 5.5), sharex=True)
+        for j, name in enumerate(('MNIST', 'CIFAR-10')):
+            r = R[name]; d = r['d']
+            ts, lin, bay = r['tsig'], r['lin'], r['bay']
+            m = (ts >= SIG_LO) & (ts <= SIG_HI)
+
+            ax = axes[2*j]
+            ax.semilogx(ts[m], lin[m], color='darkorange', lw=1.6, label='Wiener')
+            ax.semilogx(ts[m], bay[m], color='crimson', lw=1.6, label='Bayes')
+            ax.fill_between(ts[m], bay[m], lin[m], color='seagreen', alpha=.25)
+            ax.set_ylabel('MSE')
+            ax.set_title(f'{name} ($d={d}$): loss', loc='left', pad=2)
+            ax.grid(True, alpha=.25)
+            if j == 0:
+                ax.legend(fontsize=7, loc='upper left', ncol=2, frameon=False,
+                          handlelength=1.4, columnspacing=.8)
+
+            ax = axes[2*j+1]
+            for tol, color, marker in zip(TOLS, ('#1f4e9c', '#5aa2e8'), ('o', 's')):
+                ax.loglog(sigmas, tol*d/(4*r['chk']), color=color, marker=marker,
+                          lw=1.5, ms=2.8, label=rf'$\tau={tol}$')
+            ax.axhline(float(d)**N0/factorial(N0), color='indianred', ls='-.', lw=1.2,
+                       label=rf'$d^{{{N0}}}/{factorial(N0)}$')
+            ax.set_ylabel(r'width $k$')
+            ax.set_title(f'{name}: tolerance width', loc='left', pad=2)
+            ax.grid(True, alpha=.25, which='both')
+            if j == 0:
+                ax.legend(fontsize=7, loc='upper left', ncol=3, frameon=False,
+                          handlelength=1.3, columnspacing=.6)
+
+        for ax in axes:
+            ax.set_xlim(SIG_LO, SIG_HI)
+        axes[-1].set_xlabel(r'noise level $\sigma$')
+        fig.subplots_adjust(left=.19, right=.94, top=.98, bottom=.08, hspace=.35)
+        os.makedirs('figures', exist_ok=True)
+        fig.savefig(OUT_FIG, dpi=200)
+        fig.savefig(OUT_FIG.replace('.png', '.pdf'))
+        plt.close(fig)
+    print(f'Saved {OUT_FIG}')
+
+
 def make_figure(R, sigmas):
+    if ONE_COLUMN:
+        return make_figure_onecol(R, sigmas)
     plt.rcParams.update({'font.size': 12, 'axes.labelsize': 14, 'axes.titlesize': 14,
                          'xtick.labelsize': 12, 'ytick.labelsize': 12})
     fig, axes = plt.subplots(2, 2, figsize=(15.5, 9.2), sharex='col')
@@ -219,32 +279,32 @@ def make_figure(R, sigmas):
         ts, lin, bay = r['tsig'], r['lin'], r['bay']
         m = (ts >= SIG_LO) & (ts <= SIG_HI)
         gen_ok = m & (ts >= sm)                       # gap that is NOT a memorisation artifact
+        gap_mask = m if NO_NEFF else gen_ok
+        gap_label = None if NO_NEFF else (
+            r'largest attainable $\mathcal{L}^{\rm lin}_\sigma-\mathcal{L}^{\rm RF}_\sigma$'
+            '\n' r'(attained only if $\mathcal{L}^{\rm RF}_\sigma=\mathcal{L}^{\rm Bayes}_\sigma$)')
 
         # ---- top: the gap an RF denoiser could close (LINEAR MSE axis) ----
         ax = axes[0][j]
         ax.semilogx(ts[m], lin[m], color='darkorange', lw=2.6,
                     label=r'linear (Wiener) $\mathcal{L}^{\rm lin}_\sigma$')
         ax.semilogx(ts[m], bay[m], color='crimson', lw=2.6,
-                    label=r'oracle Bayes $\mathcal{L}^{\rm Bayes}_\sigma$')
-        ax.fill_between(ts[gen_ok], bay[gen_ok], lin[gen_ok], color='seagreen', alpha=.25,
-                        label=r'largest attainable $\mathcal{L}^{\rm lin}_\sigma-\mathcal{L}^{\rm RF}_\sigma$'
-                              '\n' r'(attained only if $\mathcal{L}^{\rm RF}_\sigma=\mathcal{L}^{\rm Bayes}_\sigma$)')
-        ax.fill_between(ts[m & (ts < sm)], bay[m & (ts < sm)], lin[m & (ts < sm)],
-                        color='0.55', alpha=.30, hatch='//', ec='0.35', lw=0,
-                        label=r'not a real $\mathcal{L}^{\rm lin}_\sigma-\mathcal{L}^{\rm RF}_\sigma$:'
-                              '\n' r'memorisation ($N_{\rm eff}<2$)')
+                    label=r'Bayes (empirical prior) $\mathcal{L}^{\rm Bayes}_\sigma$')
+        ax.fill_between(ts[gap_mask], bay[gap_mask], lin[gap_mask], color='seagreen', alpha=.25,
+                        label=gap_label)
+        if not NO_NEFF:
+            ax.fill_between(ts[m & (ts < sm)], bay[m & (ts < sm)], lin[m & (ts < sm)],
+                            color='0.55', alpha=.30, hatch='//', ec='0.35', lw=0,
+                            label=r'not a real $\mathcal{L}^{\rm lin}_\sigma-\mathcal{L}^{\rm RF}_\sigma$:'
+                                  '\n' r'memorisation ($N_{\rm eff}<2$)')
         ax.set_xlim(SIG_LO, SIG_HI)
-        ax.axvline(sm, color='0.30', ls='-', lw=1.6)
-        ax.annotate(f'$N_{{\\rm eff}}\\!=\\!2$\nat $\\sigma$={sm:.2f}', xy=(sm, ax.get_ylim()[1] * 0.10),
-                    xytext=(-8, 0), textcoords='offset points', ha='right',
-                    fontsize=9.5, color='0.20')
-        pk = ts[gen_ok][np.argmax((lin - bay)[gen_ok])]
-        ax.axvline(pk, color='seagreen', ls=':', lw=2.0)
-        ax.annotate(f'max  $\\sigma$={pk:.2f}', xy=(pk, ax.get_ylim()[1] * 0.62),
-                    xytext=(7, 0), textcoords='offset points', fontsize=10.5,
-                    color='seagreen', fontweight='bold')
+        if not NO_NEFF:
+            ax.axvline(sm, color='0.30', ls='-', lw=1.6)
+            ax.annotate(f'$N_{{\\rm eff}}\\!=\\!2$\nat $\\sigma$={sm:.2f}', xy=(sm, ax.get_ylim()[1] * 0.10),
+                        xytext=(-8, 0), textcoords='offset points', ha='right',
+                        fontsize=9.5, color='0.20')
         ax.set_ylabel('MSE'); ax.grid(True, alpha=.3)
-        ax.set_title(f'{name}  ($d={d}$):  how much an RF denoiser could gain')
+        ax.set_title(f'{name}  ($d={d}$):  Wiener and empirical-prior Bayes losses')
         ax.legend(fontsize=8.8, loc='upper left')
 
         # ---- bottom: the threshold ----
@@ -253,27 +313,32 @@ def make_figure(R, sigmas):
             ax2.loglog(sigmas, tol * d / (4 * r['chk']), color=c, marker=mk, lw=2.4, ms=5,
                        label=r'$(\mathcal{L}^{\rm lin}_\sigma-\mathcal{L}^{\rm RF}_\sigma)/d\leq'
                              rf'{tol}$   ($k\leq\tau d/4\check\varepsilon_w^2$)')
-        ax2.loglog(sigmas, d / r['hat'], color='0.45', ls='--', lw=2.0,
-                   label=r'$d/\hat\varepsilon_w^{\,2}$  (writeup form, $\Xi$ dropped)')
-        ax2.axhline(float(d) ** N0, color='indianred', ls='-.', lw=1.8,
-                    label=rf'$d^{{{N0}}}$ (tensor branch, $c_0{{=}}1$)')
-        ax2.axvspan(SIG_LO, sm, color='0.55', alpha=.16, hatch='//', ec='0.45', lw=0)
-        ax2.axvline(sm, color='0.30', ls='-', lw=1.4)
-        ax2.axvline(pk, color='seagreen', ls=':', lw=2.0)
+        ax2.axhline(float(d) ** N0 / factorial(N0), color='indianred', ls='-.', lw=1.8,
+                    label=rf'$d^{{{N0}}}/{factorial(N0)}$ (order-{N0} dimension scale)')
+        if not NO_NEFF:
+            ax2.axvspan(SIG_LO, sm, color='0.55', alpha=.16, hatch='//', ec='0.45', lw=0)
+            ax2.axvline(sm, color='0.30', ls='-', lw=1.4)
         ax2.set_xlim(SIG_LO, SIG_HI)
         ax2.set_xlabel(r'$\sigma$'); ax2.set_ylabel('number of RF features $k$')
         ax2.grid(True, alpha=.3, which='both')
         ax2.set_title(f'{name}: widths $k$ at which the gain is guaranteed small')
         ax2.legend(fontsize=8.8, loc='upper left')
 
-    fig.suptitle('How many ReLU random features before an RF denoiser may beat the linear one?\n'
-                 r'Thresholds are shrinkage-free ($\mathrm{Cov}(r)\Delta=\sigma^2\Sigma_y^{-1}\Delta^{\rm raw}$). '
-                 'Hatched: the plotted Bayes curve is nearest-neighbour memorisation of the '
-                 r'$N{=}10^4$ sample, not population MMSE — most of the apparent gap is not real',
-                 fontsize=13.5)
-    fig.tight_layout(rect=[0, 0, 1, 0.915])
+    if NO_NEFF:
+        fig.suptitle('How many ReLU random features before an RF denoiser may beat the linear one?',
+                     fontsize=13.5)
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+    else:
+        fig.suptitle('How many ReLU random features before an RF denoiser may beat the linear one?\n'
+                     r'Thresholds are shrinkage-free ($\mathrm{Cov}(r)\Delta=\sigma^2\Sigma_y^{-1}\Delta^{\rm raw}$). '
+                     'Hatched: the plotted Bayes curve is nearest-neighbour memorisation of the '
+                     r'$N{=}10^4$ sample, not population MMSE — most of the apparent gap is not real',
+                     fontsize=13.5)
+        fig.tight_layout(rect=[0, 0, 1, 0.915])
     os.makedirs('figures', exist_ok=True)
     fig.savefig(OUT_FIG, dpi=150, bbox_inches='tight')
+    if NO_NEFF:
+        fig.savefig(OUT_FIG.replace('.png', '.pdf'), bbox_inches='tight')
     print(f"Saved {OUT_FIG}")
 
 
